@@ -5,6 +5,13 @@ set -veo pipefail
 SCRIPTDIR=$(dirname "$0")
 BASEDIR=$(realpath "${SCRIPTDIR}/../../")
 
+# Detect OS
+if [[ "$(uname)" == "Darwin" ]]; then
+    CORES=$(sysctl -n hw.ncpu)  # macOS
+else
+    CORES=$(nproc)  # Linux
+fi
+
 build_chiaki (){
 	pushd "${BASEDIR}"
 	# if [[ ! -d './build' ]]; then
@@ -24,9 +31,11 @@ build_chiaki (){
 			-DCHIAKI_USE_SYSTEM_NANOPB=OFF \
 			-DCHIAKI_LIB_ENABLE_OPUS=ON
 	# fi
-	make -j$(nproc) -C "./build"
-	python3 ./scripts/vita/devtool.py --host $PSVITAIP upload
-	python3 ./scripts/vita/devtool.py --host $PSVITAIP launch
+	make -j$CORES -C "./build"
+	if [[ -n "$PSVITAIP" ]]; then
+	  python3 ./scripts/vita/devtool.py --host $PSVITAIP upload
+	  python3 ./scripts/vita/devtool.py --host $PSVITAIP launch
+	fi
 	popd
 }
 
