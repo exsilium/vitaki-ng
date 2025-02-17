@@ -5,7 +5,7 @@ from elftools.elf.elffile import ELFFile
 from sys import argv
 from collections import defaultdict
 
-from util import u16, u32, c_str, hexdump
+from util import u16, u32, c_str, hexdump, str2bytes
 from indent import indent, iprint
 
 

@@ -1,11 +1,10 @@
-from elftools.common.py3compat import str2bytes, bytes2str
 from elftools.elf.elffile import ELFFile
 
 from sys import argv
 from collections import defaultdict
 import subprocess
 
-from util import u16, u32, c_str, hexdump
+from util import u16, u32, c_str, hexdump, str2bytes, bytes2str
 from indent import indent, iprint
 
 

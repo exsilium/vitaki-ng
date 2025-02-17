@@ -1,5 +1,3 @@
-from elftools.common.py3compat import str2bytes
-
 import string
 import struct
 
@@ -42,3 +40,15 @@ def hexdump(src, length=16, sep='.'):
         printable = ''.join(["%s" % FILTER[ord(x)] for x in chars])
         lines.append("%08x:  %-*s  |%s|\n" % (c, length*3, hex, printable))
     print(''.join(lines))
+
+
+def str2bytes(s):
+    """ Convert a string to bytes (UTF-8 encoded) in a Python 3-compatible way. """
+    if isinstance(s, str):
+        return s.encode('utf-8')
+    return s  # Already bytes
+
+
+def bytes2str(b):
+    """ Convert bytes to a string (UTF-8 decoded) in a Python 3-compatible way. """
+    return b.decode('utf-8', errors='replace') if isinstance(b, bytes) else b
