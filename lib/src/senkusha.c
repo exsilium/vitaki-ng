@@ -77,7 +77,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_senkusha_init(ChiakiSenkusha *senkusha, Chi
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error;
 
-	err = chiaki_cond_init(&senkusha->state_cond, &senkusha->state_mutex);
+	err = chiaki_cond_init(&senkusha->state_cond);
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error_state_mutex;
 

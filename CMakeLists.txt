@@ -1,5 +1,5 @@
 
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.10)
 
 # Fix -rdynamic error with arm-vita-eabi-gcc https://github.com/tdlib/td/issues/1558
 if (POLICY CMP0065)
@@ -7,7 +7,6 @@ if (POLICY CMP0065)
 endif()
 
 project(chiaki)
-set(PKG_CONFIG_EXECUTABLE "/usr/bin/pkg-config")
 
 # Like option(), but the value can also be AUTO
 macro(tri_option name desc default)
@@ -103,9 +102,15 @@ endif()
 
 if(CHIAKI_USE_SYSTEM_CURL)
 	if (CHIAKI_USE_SYSTEM_CURL STREQUAL AUTO)
-		find_package(CURL COMPONENTS HTTP HTTPS WS WSS QUIET)
-		if(NOT TARGET CURL::libcurl_shared)
-			set(CURL_FOUND OFF)
+		if (CHIAKI_ENABLE_VITA)
+			# FIXME manually disable websocket check... (since libcurl won't build, as expected...)
+			# (holepunching should fail though)
+			find_package(CURL)
+		else()
+			find_package(CURL COMPONENTS HTTP HTTPS WS WSS QUIET)
+			if(NOT TARGET CURL::libcurl_shared)
+				set(CURL_FOUND OFF)
+			endif()
 		endif()
 		set(CHIAKI_USE_SYSTEM_CURL ${CURL_FOUND})
 	else()
@@ -127,7 +132,8 @@ if(CHIAKI_ENABLE_SPEEX)
 	endif()
 endif()
 
-find_package(PythonInterp 3 REQUIRED) # Make sure nanopb doesn't find Python 2.7 because Python 2 should just die.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
 
 if(CHIAKI_USE_SYSTEM_NANOPB)
 	if(CHIAKI_USE_SYSTEM_NANOPB STREQUAL AUTO)

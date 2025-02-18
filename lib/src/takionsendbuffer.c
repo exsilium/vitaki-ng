@@ -46,7 +46,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_buffer_init(ChiakiTakionSendBuf
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error_packets;
 
-	err = chiaki_cond_init(&send_buffer->cond, &send_buffer->mutex);
+	err = chiaki_cond_init(&send_buffer->cond);
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error_mutex;
 

@@ -68,6 +68,7 @@ typedef struct chiaki_cond_t
 	CONDITION_VARIABLE cond;
 #elif defined(__PSVITA__)
 	SceUID cond_id;
+	SceUID cond_mutex_id;
 	unsigned int timeout_us;
 #else
 	pthread_cond_t cond;
@@ -76,7 +77,7 @@ typedef struct chiaki_cond_t
 
 typedef bool (*ChiakiCheckPred)(void *);
 
-	CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_init(ChiakiCond *cond, ChiakiMutex *mutex);
+CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_init(ChiakiCond *cond);
 CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_fini(ChiakiCond *cond);
 CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_wait(ChiakiCond *cond, ChiakiMutex *mutex);
 CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_timedwait(ChiakiCond *cond, ChiakiMutex *mutex, uint64_t timeout_ms);

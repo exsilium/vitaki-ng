@@ -82,7 +82,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_init(ChiakiStreamConnecti
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error;
 
-	err = chiaki_cond_init(&stream_connection->state_cond, &stream_connection->state_mutex);
+	err = chiaki_cond_init(&stream_connection->state_cond);
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error_state_mutex;
 

@@ -350,64 +350,6 @@ static void *discovery_thread_func(void *user)
 	while(1)
 	{
 		ChiakiErrorCode err = chiaki_stop_pipe_select_single(&thread->stop_pipe, discovery->socket, false, UINT64_MAX);
-		if(err == CHIAKI_ERR_CANCELED) {
-			break;
-		}
-		if(err != CHIAKI_ERR_SUCCESS)
-		{
-			break;
-		}
-
-		char buf[512];
-		struct sockaddr client_addr;
-		socklen_t client_addr_size = sizeof(client_addr);
-		// #ifdef __PSVITA__
-		// 	int n = sceNetRecvfrom(discovery->socket, buf, sizeof(buf) - 1, 0, (SceNetSockaddr*) &client_addr, &client_addr_size);
-		// #else
-			int n = recvfrom(discovery->socket, buf, sizeof(buf) - 1, 0, &client_addr, &client_addr_size);
-		// #endif
-		if(n < 0)
-		{
-			CHIAKI_LOGE(discovery->log, "Discovery thread failed to read from socket");
-			break;
-		}
-
-		if(n == 0) {
-			continue;
-		}
-
-		if(n > sizeof(buf) - 1)
-			n = sizeof(buf) - 1;
-
-		buf[n] = '\00';
-
-		CHIAKI_LOGV(discovery->log, "Discovery received:\n%s", buf);
-		chiaki_log_hexdump_raw(discovery->log, CHIAKI_LOG_VERBOSE, (const uint8_t *)buf, n);
-
-		char addr_buf[64];
-		ChiakiDiscoveryHost response;
-		err = chiaki_discovery_srch_response_parse(&response, &client_addr, addr_buf, sizeof(addr_buf), buf, n);
-		if(err != CHIAKI_ERR_SUCCESS)
-		{
-			CHIAKI_LOGI(discovery->log, "Discovery Response invalid");
-			continue;
-		}
-
-		if(thread->cb)
-			thread->cb(&response, thread->cb_user);
-	}
-
-	return NULL;
-}
-
-static void *discovery_thread_func_oneshot(void *user)
-{
-	ChiakiDiscoveryThread *thread = user;
-	ChiakiDiscovery *discovery = thread->discovery;
-
-	while(1)
-	{
-		ChiakiErrorCode err = chiaki_stop_pipe_select_single(&thread->stop_pipe, discovery->socket, false, UINT64_MAX);
 		if(err == CHIAKI_ERR_CANCELED)
 			break;
 		if(err != CHIAKI_ERR_SUCCESS)
@@ -447,10 +389,7 @@ static void *discovery_thread_func_oneshot(void *user)
 		}
 
 		if(thread->cb)
-		{
 			thread->cb(&response, thread->cb_user);
-			break;
-		}
 	}
 
 	return NULL;

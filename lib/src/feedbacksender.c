@@ -28,7 +28,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_feedback_sender_init(ChiakiFeedbackSender *
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error_history_buffer;
 
-	err = chiaki_cond_init(&feedback_sender->state_cond, &feedback_sender->state_mutex);
+	err = chiaki_cond_init(&feedback_sender->state_cond);
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error_mutex;
 

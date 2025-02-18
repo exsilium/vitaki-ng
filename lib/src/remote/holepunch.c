@@ -14,7 +14,8 @@
  * The hole punching process itself i
  */
  
-// TODO: Make portable for Switch
+// TODO: Make portable for Vita
+#if !defined(__PSVITA__)
 
 #include <string.h>
 #include <stdlib.h>
@@ -5595,3 +5596,4 @@ static void remove_substring(char *str, char *substring)
     char *end = start + strlen(substring);
     memmove(start, start + strlen(substring), strlen(end) + 1);
 }
+#endif

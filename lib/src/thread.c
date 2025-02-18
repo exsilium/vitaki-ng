@@ -242,14 +242,18 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_mutex_unlock(ChiakiMutex *mutex)
 	return CHIAKI_ERR_SUCCESS;
 }
 
-CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_init(ChiakiCond *cond, ChiakiMutex *mutex)
+CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_init(ChiakiCond *cond)
 {
 #if _WIN32
 	InitializeConditionVariable(&cond->cond);
 #elif defined(__PSVITA__)
 	snprintf(name_buffer, sizeof(name_buffer), "0x%08X", ((unsigned int) cond) + 1);
-	cond->cond_id = sceKernelCreateCond(name_buffer, 0, mutex->mutex_id, 0);
+	cond->cond_mutex_id = sceKernelCreateMutex(name_buffer, 0, 0, NULL);
+	if(cond->cond_mutex_id < 0)
+		return CHIAKI_ERR_UNKNOWN;
+	cond->cond_id = sceKernelCreateCond(name_buffer, 0, cond->cond_mutex_id, 0);
 	if (cond->cond_id < 0) {
+		sceKernelDeleteMutex(cond->cond_mutex_id);
 		return CHIAKI_ERR_UNKNOWN;
 	}
 #else
@@ -281,6 +285,9 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_fini(ChiakiCond *cond)
 #if _WIN32
 #elif defined(__PSVITA__)
 	if (sceKernelDeleteCond(cond->cond_id) < 0) {
+		return CHIAKI_ERR_UNKNOWN;
+	}
+	if (sceKernelDeleteMutex(cond->cond_mutex_id) < 0) {
 		return CHIAKI_ERR_UNKNOWN;
 	}
 #else
@@ -351,6 +358,21 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_thread_timedjoin(ChiakiThread *thread, void
 		return CHIAKI_ERR_THREAD;
 	if(retval)
 		*retval = thread->ret;
+#elif defined(__PSVITA__)
+	// FIXME ywnico: check implementation
+	// Note: sceKernelWaitThreadEnd takes timeout in microseconds, not milliseconds
+	thread->timeout_us = timeout_ms * 1000;
+	int r = sceKernelWaitThreadEnd(thread->thread_id, 0, &thread->timeout_us);
+	if (r < 0) {
+		return CHIAKI_ERR_THREAD;
+	}
+	r = sceKernelDeleteThread(thread->thread_id);
+	if (r < 0) {
+		return CHIAKI_ERR_THREAD;
+	}
+	if (retval) {
+		*retval = thread->ret;
+	}
 #else
 	struct timespec timeout;
 	set_timeout(&timeout, timeout_ms);
@@ -486,7 +508,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_bool_pred_cond_init(ChiakiBoolPredCond *con
 	if(err != CHIAKI_ERR_SUCCESS)
 		return err;
 
-	err = chiaki_cond_init(&cond->cond, &cond->mutex);
+	err = chiaki_cond_init(&cond->cond);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
 		chiaki_mutex_fini(&cond->mutex);

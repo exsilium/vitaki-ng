@@ -278,8 +278,10 @@ error_state_mutex:
 error_state_cond:
 	chiaki_cond_fini(&session->state_cond);
 error:
+#ifndef __PSVITA__
 	if(session->holepunch_session)
 		chiaki_holepunch_session_fini(session->holepunch_session);
+#endif
 	return err;
 }
 
@@ -296,8 +298,10 @@ CHIAKI_EXPORT void chiaki_session_fini(ChiakiSession *session)
 	chiaki_ctrl_fini(&session->ctrl);
 	if(session->rudp)
 		chiaki_rudp_fini(session->rudp);
+#ifndef __PSVITA__
 	if(session->holepunch_session)
 		chiaki_holepunch_session_fini(session->holepunch_session);
+#endif
 	chiaki_stop_pipe_fini(&session->stop_pipe);
 	chiaki_cond_fini(&session->state_cond);
 	chiaki_mutex_fini(&session->state_mutex);
@@ -443,6 +447,7 @@ static void *session_thread_func(void *arg)
 
 	CHECK_STOP(quit);
 
+#ifndef __PSVITA__
 	if(session->holepunch_session)
 	{
 		chiaki_socket_t *rudp_sock = chiaki_get_holepunch_sock(session->holepunch_session, CHIAKI_HOLEPUNCH_PORT_TYPE_CTRL);
@@ -453,13 +458,16 @@ static void *session_thread_func(void *arg)
 			CHECK_STOP(quit);
 		}
 	}
+#endif
 	// PSN Connection
 	if(session->rudp)
 	{
 		ChiakiRegist regist;
 		ChiakiRegistInfo info;
+#ifndef __PSVITA__
 		ChiakiHolepunchRegistInfo hinfo = chiaki_get_regist_info(session->holepunch_session);
 		info.holepunch_info = &hinfo;
+#endif
 		info.host = NULL;
 		info.broadcast = false;
 		info.psn_online_id = NULL;
@@ -562,6 +570,7 @@ static void *session_thread_func(void *arg)
 	}
 
 	chiaki_socket_t *data_sock = NULL;
+#ifndef __PSVITA__
 	if(session->rudp)
 	{
 		ChiakiErrorCode err = holepunch_session_create_offer(session->holepunch_session);
@@ -570,31 +579,6 @@ static void *session_thread_func(void *arg)
 			CHIAKI_LOGE(session->log, "!! Failed to create offer msg for data connection");
 			CHECK_STOP(quit_ctrl);
 		}
-		CHIAKI_LOGI(session->log, "Punching hole for data connection");
-		ChiakiEvent event_start = { 0 };
-		event_start.type = CHIAKI_EVENT_HOLEPUNCH;
-		event_start.data_holepunch.finished = false;
-		chiaki_session_send_event(session, &event_start);
-		err = chiaki_holepunch_session_punch_hole(session->holepunch_session, CHIAKI_HOLEPUNCH_PORT_TYPE_DATA);
-		if (err != CHIAKI_ERR_SUCCESS)
-		{
-			CHIAKI_LOGE(session->log, "!! Failed to punch hole for data connection.");
-			QUIT(quit_ctrl);
-		}
-		CHIAKI_LOGI(session->log, ">> Punched hole for data connection!");
-		data_sock = chiaki_get_holepunch_sock(session->holepunch_session, CHIAKI_HOLEPUNCH_PORT_TYPE_DATA);
-		ChiakiEvent event_finish = { 0 };
-		event_finish.type = CHIAKI_EVENT_HOLEPUNCH;
-		event_finish.data_holepunch.finished = true;
-		chiaki_session_send_event(session, &event_finish);
-		err = chiaki_cond_timedwait_pred(&session->state_cond, &session->state_mutex, SESSION_EXPECT_TIMEOUT_MS, session_check_state_pred_ctrl_start, session);
-		CHECK_STOP(quit_ctrl);
-	}
-
-	chiaki_socket_t *data_sock = NULL;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
-	if(session->rudp)
-	{
 		CHIAKI_LOGI(session->log, "Punching hole for data connection");
 		ChiakiEvent event_start = { 0 };
 		event_start.type = CHIAKI_EVENT_HOLEPUNCH;
@@ -820,12 +804,15 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 			set_port(sa, htons(SESSION_PORT));
 
 			// TODO: this can block, make cancelable somehow
+#ifndef __PSVITA__
+		//  FIXME: ok on vita?
 			int r = getnameinfo(sa, (socklen_t)ai->ai_addrlen, session->connect_info.hostname, sizeof(session->connect_info.hostname), NULL, 0, NI_NUMERICHOST);
 			if(r != 0)
 			{
 				CHIAKI_LOGE(session->log, "getnameinfo failed with %s, filling the hostname with fallback", gai_strerror(r));
 				memcpy(session->connect_info.hostname, "unknown", 8);
 			}
+#endif
 
 			CHIAKI_LOGI(session->log, "Trying to request session from %s:%d", session->connect_info.hostname, SESSION_PORT);
 
@@ -942,11 +929,13 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 
 	char send_buf[512];
 	int port = SESSION_PORT;
+#ifndef __PSVITA__
 	if(session->holepunch_session)
 	{
 		chiaki_get_ps_selected_addr(session->holepunch_session, session->connect_info.hostname);
 		port = chiaki_get_ps_ctrl_port(session->holepunch_session);
 	}
+#endif
 	int request_len = snprintf(send_buf, sizeof(send_buf), session_request_fmt,
 			path, session->connect_info.hostname, port, regist_key_hex, rp_version_str);
 	if(request_len < 0 || request_len >= sizeof(send_buf))

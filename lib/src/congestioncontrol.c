@@ -32,7 +32,6 @@ static void *congestion_control_thread_func(void *user)
 		}
 		packet.received = (uint16_t)received;
 		packet.lost = (uint16_t)lost;
-		uint64_t total = received + lost;
 		control->packet_loss = total > 0 ? (double)lost / total : 0;
 		CHIAKI_LOGV(control->takion->log, "Sending Congestion Control Packet, received: %u, lost: %u",
 			(unsigned int)packet.received, (unsigned int)packet.lost);
@@ -75,7 +74,12 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_congestion_control_stop(ChiakiCongestionCon
 	err = chiaki_thread_join(&control->thread, NULL);
 	if(err != CHIAKI_ERR_SUCCESS)
 		return err;
+	// FIXME ywnico check what to set thread_id to
+	#ifdef __PSVITA__
+	control->thread.thread_id = 0;
+	#else
 	control->thread.thread = 0;
+	#endif
 
 	return chiaki_bool_pred_cond_fini(&control->stop_cond);
 }

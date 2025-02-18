@@ -559,6 +559,7 @@ static chiaki_socket_t regist_search_connect(ChiakiRegist *regist, struct addrin
 				r = bind(sock, send_addr, *send_addr_len);
 				((struct sockaddr_in *)send_addr)->sin_addr.s_addr = ip;
 			}
+#ifndef __PSVITA__
 			else
 			{
 				struct in6_addr ip;
@@ -569,6 +570,7 @@ static chiaki_socket_t regist_search_connect(ChiakiRegist *regist, struct addrin
 				r = bind(sock, send_addr, *send_addr_len);
 				memcpy(&(((struct sockaddr_in6 *)send_addr)->sin6_addr), &ip, sizeof(struct in6_addr));
 			}
+#endif
 			if(r < 0)
 			{
 				CHIAKI_LOGE(regist->log, "Regist failed to bind socket, trying next address...");
