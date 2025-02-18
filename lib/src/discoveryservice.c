@@ -56,7 +56,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_discovery_service_init(ChiakiDiscoveryServi
 
 	service->options.broadcast_addrs = NULL;
 	service->options.broadcast_num = options->broadcast_num;
-	if(options->broadcast_num > 0)
+	if(options->broadcast_num > 0 && options->broadcast_addrs)
 	{
 		service->options.broadcast_addrs = malloc(service->options.broadcast_num * sizeof(struct sockaddr_storage));
 		if(!service->options.broadcast_addrs)
