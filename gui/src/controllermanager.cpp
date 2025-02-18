@@ -10,6 +10,38 @@
 #include <SDL.h>
 #endif
 
+/* PS5 trigger effect documentation:
+   https://controllers.fandom.com/wiki/Sony_DualSense#FFB_Trigger_Modes
+
+   Taken from SDL2, licensed under the zlib license,
+   Copyright (C) 1997-2022 Sam Lantinga <slouken@libsdl.org>
+   https://github.com/libsdl-org/SDL/blob/release-2.24.1/test/testgamecontroller.c#L263-L289
+*/
+typedef struct
+{
+    Uint8 ucEnableBits1;                /* 0 */
+    Uint8 ucEnableBits2;                /* 1 */
+    Uint8 ucRumbleRight;                /* 2 */
+    Uint8 ucRumbleLeft;                 /* 3 */
+    Uint8 ucHeadphoneVolume;            /* 4 */
+    Uint8 ucSpeakerVolume;              /* 5 */
+    Uint8 ucMicrophoneVolume;           /* 6 */
+    Uint8 ucAudioEnableBits;            /* 7 */
+    Uint8 ucMicLightMode;               /* 8 */
+    Uint8 ucAudioMuteBits;              /* 9 */
+    Uint8 rgucRightTriggerEffect[11];   /* 10 */
+    Uint8 rgucLeftTriggerEffect[11];    /* 21 */
+    Uint8 rgucUnknown1[6];              /* 32 */
+    Uint8 ucEnableBits3;                /* 38 */
+    Uint8 rgucUnknown2[2];              /* 39 */
+    Uint8 ucLedAnim;                    /* 41 */
+    Uint8 ucLedBrightness;              /* 42 */
+    Uint8 ucPadLights;                  /* 43 */
+    Uint8 ucLedRed;                     /* 44 */
+    Uint8 ucLedGreen;                   /* 45 */
+    Uint8 ucLedBlue;                    /* 46 */
+} DS5EffectsState_t;
+
 static QSet<QString> chiaki_motion_controller_guids({
 	// Sony on Linux
 	"03000000341a00003608000011010000",
@@ -67,19 +99,32 @@ static QSet<QString> chiaki_motion_controller_guids({
 	"030000008f0e00001431000000000000",
 });
 
-static QSet<QPair<int16_t, int16_t>> chiaki_dualsense_controller_ids({
+static QSet<QPair<uint16_t, uint16_t>> chiaki_dualsense_controller_ids({
 	// in format (vendor id, product id)
-	QPair<int16_t, int16_t>(0x054c, 0x0ce6), // DualSense controller
-	QPair<int16_t, int16_t>(0x054c, 0x0df2), // DualSense Edge controller
+	QPair<uint16_t, uint16_t>(0x054c, 0x0ce6), // DualSense controller
 });
 
-#ifdef CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
-static QSet<QPair<int16_t, int16_t>> chiaki_steamdeck_controller_ids({
+static QSet<QPair<uint16_t, uint16_t>> chiaki_dualsense_edge_controller_ids({
 	// in format (vendor id, product id)
-	QPair<int16_t, int16_t>(0x28de, 0x1205), // Steam Deck
-	QPair<int16_t, int16_t>(0x28de, 0x11ff) // Steam Virtual Controller
+	QPair<uint16_t, uint16_t>(0x054c, 0x0df2), // DualSense Edge controller
 });
+
+static QSet<QPair<uint16_t, uint16_t>> chiaki_handheld_controller_ids({
+	// in format (vendor id, product id)
+	QPair<uint16_t, uint16_t>(0x28de, 0x1205), // Steam Deck
+	QPair<uint16_t, uint16_t>(0x0b05, 0x1abe), // Rog Ally
+	QPair<uint16_t, uint16_t>(0x17ef, 0x6182), // Legion Go
+	QPair<uint16_t, uint16_t>(0x0db0, 0x1901), // MSI Claw
+});
+
+static QSet<QPair<uint16_t, uint16_t>> chiaki_steam_virtual_controller_ids({
+	// in format (vendor id, product id)
+#ifdef Q_OS_MACOS
+    QPair<uint16_t, uint16_t>(0x045e, 0x028e), // Microsoft Xbox 360 Controller
+#else
+	QPair<uint16_t, uint16_t>(0x28de, 0x11ff), // Steam Virtual Controller
 #endif
+});
 
 static ControllerManager *instance = nullptr;
 
@@ -93,13 +138,17 @@ ControllerManager *ControllerManager::GetInstance()
 }
 
 ControllerManager::ControllerManager(QObject *parent)
-	: QObject(parent)
+	: QObject(parent), creating_controller_mapping(false),
+	joystick_allow_background_events(true), is_app_active(true)
 {
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	SDL_SetMainReady();
 	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1");
 	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
 	SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#if SDL_VERSION_ATLEAST(2, 29, 1)
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK, "0");
+#endif
 	if(SDL_Init(SDL_INIT_GAMECONTROLLER) < 0)
 		return;
 
@@ -119,6 +168,16 @@ ControllerManager::~ControllerManager()
 	open_controllers.clear();
 	SDL_Quit();
 #endif
+}
+
+void ControllerManager::SetAllowJoystickBackgroundEvents(bool enabled)
+{
+	this->joystick_allow_background_events = enabled;
+}
+
+void ControllerManager::SetIsAppActive(bool active)
+{
+	this->is_app_active = active;
 }
 
 void ControllerManager::SetButtonsByPos()
@@ -159,10 +218,15 @@ void ControllerManager::UpdateAvailableControllers()
 
 	if(current_controllers != available_controllers)
 	{
-		available_controllers = current_controllers;
+		available_controllers = std::move(current_controllers);
 		emit AvailableControllersUpdated();
 	}
 #endif
+}
+
+void ControllerManager::creatingControllerMapping(bool creating_controller_mapping)
+{
+	this->creating_controller_mapping = creating_controller_mapping;
 }
 
 void ControllerManager::HandleEvents()
@@ -177,6 +241,10 @@ void ControllerManager::HandleEvents()
 			case SDL_JOYDEVICEREMOVED:
 				UpdateAvailableControllers();
 				break;
+			case SDL_JOYAXISMOTION:
+			case SDL_JOYBUTTONDOWN:
+			case SDL_JOYBUTTONUP:
+			case SDL_JOYHATMOTION:
 			case SDL_CONTROLLERBUTTONUP:
 			case SDL_CONTROLLERBUTTONDOWN:
 			case SDL_CONTROLLERAXISMOTION:
@@ -186,7 +254,8 @@ void ControllerManager::HandleEvents()
 			case SDL_CONTROLLERTOUCHPADMOTION:
 			case SDL_CONTROLLERTOUCHPADUP:
 #endif
-				ControllerEvent(event);
+				if(joystick_allow_background_events || is_app_active)
+					ControllerEvent(event);
 				break;
 		}
 	}
@@ -197,9 +266,12 @@ void ControllerManager::HandleEvents()
 void ControllerManager::ControllerEvent(SDL_Event event)
 {
 	int device_id;
+	bool start_updating_mapping = false;
 	switch(event.type)
 	{
 		case SDL_CONTROLLERBUTTONDOWN:
+			device_id = event.cbutton.which;
+			break;
 		case SDL_CONTROLLERBUTTONUP:
 			device_id = event.cbutton.which;
 			break;
@@ -211,16 +283,37 @@ void ControllerManager::ControllerEvent(SDL_Event event)
 			device_id = event.csensor.which;
 			break;
 		case SDL_CONTROLLERTOUCHPADDOWN:
+			device_id = event.ctouchpad.which;
+			break;
 		case SDL_CONTROLLERTOUCHPADMOTION:
 		case SDL_CONTROLLERTOUCHPADUP:
 			device_id = event.ctouchpad.which;
 			break;
 #endif
+		case SDL_JOYAXISMOTION:
+			device_id = event.jaxis.which;
+			break;
+		case SDL_JOYBUTTONDOWN:
+			start_updating_mapping = true;
+			device_id = event.jbutton.which;
+			break;
+		case SDL_JOYBUTTONUP:
+			device_id = event.jbutton.which;
+			break;
+		case SDL_JOYHATMOTION:
+			start_updating_mapping = true;
+			device_id = event.jhat.which;
+			break;
 		default:
 			return;
 	}
 	if(!open_controllers.contains(device_id))
 		return;
+	if(creating_controller_mapping && start_updating_mapping)
+	{
+		open_controllers[device_id]->StartUpdatingMapping();
+		creating_controller_mapping = false;
+	}
 	open_controllers[device_id]->UpdateState(event);
 }
 #endif
@@ -252,12 +345,15 @@ void ControllerManager::ControllerClosed(Controller *controller)
 }
 
 Controller::Controller(int device_id, ControllerManager *manager)
-: QObject(manager), ref(0), is_dualsense(false), is_steamdeck(false)
+: QObject(manager), ref(0), last_motion_timestamp(0), micbutton_push(false), is_dualsense(false),
+  is_dualsense_edge(false), has_led(false), firmware_version(0), updating_mapping_button(false), is_handheld(false),
+  is_steam_virtual(false), is_steam_virtual_unmasked(false), enable_analog_stick_mapping(false)
 {
 	this->id = device_id;
 	this->manager = manager;
-	this->micbutton_push = false;
 	chiaki_orientation_tracker_init(&this->orientation_tracker);
+	chiaki_accel_new_zero_set_inactive(&this->accel_zero, false);
+	chiaki_accel_new_zero_set_inactive(&this->real_accel, true);
 	chiaki_controller_state_set_idle(&this->state);
 
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
@@ -273,11 +369,23 @@ Controller::Controller(int device_id, ControllerManager *manager)
 			if(SDL_GameControllerHasSensor(controller, SDL_SENSOR_GYRO))
 				SDL_GameControllerSetSensorEnabled(controller, SDL_SENSOR_GYRO, SDL_TRUE);
 #endif
-			auto controller_id = QPair<int16_t, int16_t>(SDL_GameControllerGetVendor(controller), SDL_GameControllerGetProduct(controller));
+			has_led = SDL_GameControllerHasLED(controller);
+			auto controller_id = QPair<uint16_t, uint16_t>(SDL_GameControllerGetVendor(controller), SDL_GameControllerGetProduct(controller));
 			is_dualsense = chiaki_dualsense_controller_ids.contains(controller_id);
-#ifdef CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
-			is_steamdeck = chiaki_steamdeck_controller_ids.contains(controller_id);
-			//printf("\nVendor ID: %x \nProduct ID: %x\n", controller_id.first, controller_id.second);
+			is_handheld = chiaki_handheld_controller_ids.contains(controller_id);
+			is_dualsense_edge = chiaki_dualsense_edge_controller_ids.contains(controller_id);
+			firmware_version = SDL_GameControllerGetFirmwareVersion(controller);
+			SDL_Joystick *js = SDL_GameControllerGetJoystick(controller);
+			SDL_JoystickGUID guid = SDL_JoystickGetGUID(js);
+			auto guid_controller_id = QPair<uint16_t, uint16_t>(0, 0);
+			uint16_t guid_version = 0;
+			SDL_GetJoystickGUIDInfo(guid, &guid_controller_id.first, &guid_controller_id.second, &guid_version, NULL);
+#ifdef Q_OS_MACOS
+			is_steam_virtual = (guid_version == 0 && chiaki_steam_virtual_controller_ids.contains(guid_controller_id));
+			is_steam_virtual_unmasked = (guid_version == 0 && chiaki_steam_virtual_controller_ids.contains(controller_id));
+#else
+			is_steam_virtual = chiaki_steam_virtual_controller_ids.contains(guid_controller_id);
+			is_steam_virtual_unmasked = chiaki_steam_virtual_controller_ids.contains(controller_id);
 #endif
 			break;
 		}
@@ -294,9 +402,25 @@ Controller::~Controller()
 		// Clear trigger effects, SDL doesn't do it automatically
 		const uint8_t clear_effect[10] = { 0 };
 		this->SetTriggerEffects(0x05, clear_effect, 0x05, clear_effect);
+		this->SetRumble(0,0);
 		SDL_GameControllerClose(controller);
 	}
 #endif
+}
+
+void Controller::StartUpdatingMapping()
+{
+	emit UpdatingControllerMapping(this);
+}
+
+void Controller::IsUpdatingMappingButton(bool is_updating_mapping_button)
+{
+	this->updating_mapping_button = is_updating_mapping_button;
+}
+
+void Controller::EnableAnalogStickMapping(bool enabled)
+{
+	this->enable_analog_stick_mapping = enabled;
 }
 
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
@@ -304,6 +428,29 @@ void Controller::UpdateState(SDL_Event event)
 {
 	switch(event.type)
 	{
+		case SDL_JOYAXISMOTION:
+			if(updating_mapping_button && enable_analog_stick_mapping)
+			{
+				emit NewButtonMapping(QString("a%1").arg(QString::number(event.jaxis.axis)));
+				updating_mapping_button = false;
+			}
+			return;
+		case SDL_JOYBUTTONDOWN:
+			if(updating_mapping_button)
+			{
+				emit NewButtonMapping(QString("b%1").arg(QString::number(event.jbutton.button)));
+				updating_mapping_button = false;
+			}
+			return;
+		case SDL_JOYBUTTONUP:
+			return;
+		case SDL_JOYHATMOTION:
+			if(updating_mapping_button)
+			{
+				emit NewButtonMapping(QString("h%1.%2").arg(QString::number(event.jhat.hat)).arg(QString::number(event.jhat.value)));
+				updating_mapping_button = false;
+			}
+			return;
 		case SDL_CONTROLLERBUTTONDOWN:
 		case SDL_CONTROLLERBUTTONUP:
 			if(!HandleButtonEvent(event.cbutton))
@@ -384,6 +531,14 @@ inline bool Controller::HandleButtonEvent(SDL_ControllerButtonEvent event) {
 		case SDL_CONTROLLER_BUTTON_MISC1:
 			micbutton_push = true;
 			break;
+		case SDL_CONTROLLER_BUTTON_PADDLE1:
+			return false;
+		case SDL_CONTROLLER_BUTTON_PADDLE2:
+			return false;
+		case SDL_CONTROLLER_BUTTON_PADDLE3:
+			return false;
+		case SDL_CONTROLLER_BUTTON_PADDLE4:
+			return false;
 #if SDL_VERSION_ATLEAST(2, 0, 14)
 		case SDL_CONTROLLER_BUTTON_TOUCHPAD:
 			ps_btn = CHIAKI_CONTROLLER_BUTTON_TOUCHPAD;
@@ -403,6 +558,7 @@ inline bool Controller::HandleButtonEvent(SDL_ControllerButtonEvent event) {
 		{
 			micbutton_push = false;
 			emit MicButtonPush();
+			return false;
 		}
 		else
 			state.buttons &= ~ps_btn;
@@ -440,24 +596,31 @@ inline bool Controller::HandleAxisEvent(SDL_ControllerAxisEvent event) {
 #if SDL_VERSION_ATLEAST(2, 0, 14)
 inline bool Controller::HandleSensorEvent(SDL_ControllerSensorEvent event)
 {
+	float accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z;
 	switch(event.sensor)
 	{
 		case SDL_SENSOR_ACCEL:
-			state.accel_x = event.data[0] / SDL_STANDARD_GRAVITY;
-			state.accel_y = event.data[1] / SDL_STANDARD_GRAVITY;
-			state.accel_z = event.data[2] / SDL_STANDARD_GRAVITY;
+			accel_x = event.data[0] / SDL_STANDARD_GRAVITY;
+			accel_y = event.data[1] / SDL_STANDARD_GRAVITY;
+			accel_z = event.data[2] / SDL_STANDARD_GRAVITY;
+			chiaki_accel_new_zero_set_active(&this->real_accel,
+			accel_x, accel_y, accel_z, true);
+			chiaki_orientation_tracker_update(
+				&orientation_tracker, state.gyro_x, state.gyro_y, state.gyro_z,
+				accel_x, accel_y, accel_z, &accel_zero, false, event.timestamp * 1000);
 			break;
 		case SDL_SENSOR_GYRO:
-			state.gyro_x = event.data[0];
-			state.gyro_y = event.data[1];
-			state.gyro_z = event.data[2];
+			gyro_x = event.data[0];
+			gyro_y = event.data[1];
+			gyro_z = event.data[2];
+			chiaki_orientation_tracker_update(
+				&orientation_tracker, gyro_x, gyro_y, gyro_z,
+				state.accel_x, state.accel_y, state.accel_z, &accel_zero, true, event.timestamp * 1000);
 			break;
 		default:
 			return false;
 	}
-	chiaki_orientation_tracker_update(
-		&orientation_tracker, state.gyro_x, state.gyro_y, state.gyro_z,
-		state.accel_x, state.accel_y, state.accel_z, event.timestamp * 1000);
+	last_motion_timestamp = event.timestamp * 1000;
 	chiaki_orientation_tracker_apply_to_controller_state(&orientation_tracker, &state);
 	return true;
 }
@@ -526,6 +689,48 @@ int Controller::GetDeviceID()
 #endif
 }
 
+QString Controller::GetType()
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return QString();
+	SDL_Joystick *js = SDL_GameControllerGetJoystick(controller);
+	return QString("%1").arg(SDL_JoystickName(js));
+#else
+	return QString();
+#endif
+}
+
+bool Controller::IsPS()
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return false;
+	SDL_GameControllerType type = SDL_GameControllerGetType(controller);
+	if(type == SDL_CONTROLLER_TYPE_PS3 || type == SDL_CONTROLLER_TYPE_PS4 || type == SDL_CONTROLLER_TYPE_PS5)
+		return true;
+	else
+		return false;
+#else
+	return false;
+#endif
+}
+
+QString Controller::GetGUIDString()
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return QString();
+	SDL_Joystick *js = SDL_GameControllerGetJoystick(controller);
+	char guid_str[256];
+	SDL_JoystickGUID guid = SDL_JoystickGetGUID(js);
+	SDL_JoystickGetGUIDString(guid, guid_str, sizeof(guid_str));
+	return QString("%1").arg(guid_str);
+#else
+	return QString();
+#endif
+}
+
 QString Controller::GetName()
 {
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
@@ -541,6 +746,18 @@ QString Controller::GetName()
 #endif
 }
 
+QString Controller::GetVIDPIDString()
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return QString();
+	QString vid_pid = QString("0x%1:0x%2").arg(SDL_GameControllerGetVendor(controller), 4, 16, QChar('0')).arg(SDL_GameControllerGetProduct(controller), 4, 16, QChar('0'));
+	return vid_pid;
+#else
+	return QString();
+#endif
+}
+
 ChiakiControllerState Controller::GetState()
 {
 	return state;
@@ -551,14 +768,36 @@ void Controller::SetRumble(uint8_t left, uint8_t right)
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	if(!controller)
 		return;
-	SDL_GameControllerRumble(controller, (uint16_t)left << 8, (uint16_t)right << 8, 5000);
+	left = (left > 127) ? 127: left;
+	right = (right > 127) ? 127: right;
+	SDL_GameControllerRumble(controller, (uint16_t)left << 9, (uint16_t)right << 9, 5000);
+#endif
+}
+
+void Controller::SetDualSenseIntensity(uint8_t trigger_intensity, uint8_t rumble_intensity)
+{
+	if((!is_dualsense && !is_dualsense_edge) || !controller)
+		return;
+	DS5EffectsState_t state;
+	SDL_zero(state);
+	state.rgucUnknown1[4] = trigger_intensity | rumble_intensity;
+	state.ucEnableBits2 |= 0x40;
+	SDL_GameControllerSendEffect(controller, &state, sizeof(state));
+}
+
+void Controller::ChangeLEDColor(const uint8_t *led_color)
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller || !has_led)
+		return;
+	SDL_GameControllerSetLED(controller, led_color[0], led_color[1], led_color[2]);
 #endif
 }
 
 void Controller::SetTriggerEffects(uint8_t type_left, const uint8_t *data_left, uint8_t type_right, const uint8_t *data_right)
 {
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
-	if(!is_dualsense || !controller)
+	if((!is_dualsense && !is_dualsense_edge) || !controller)
 		return;
 	DS5EffectsState_t state;
 	SDL_zero(state);
@@ -574,7 +813,7 @@ void Controller::SetTriggerEffects(uint8_t type_left, const uint8_t *data_left, 
 void Controller::SetDualsenseMic(bool on)
 {
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
-	if(!is_dualsense || !controller)
+	if((!is_dualsense && !is_dualsense_edge) || !controller)
 		return;
 	DS5EffectsState_t state;
 	SDL_zero(state);
@@ -593,12 +832,12 @@ void Controller::SetDualsenseMic(bool on)
 #endif
 }
 
-void Controller::SetHapticRumble(uint16_t left, uint16_t right, int ms)
+void Controller::SetHapticRumble(uint16_t left, uint16_t right)
 {
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	if(!controller)
 		return;
-	SDL_GameControllerRumble(controller, left, right, ms);
+	SDL_GameControllerRumble(controller, left, right, 5000);
 #endif
 }
 
@@ -612,12 +851,56 @@ bool Controller::IsDualSense()
 	return false;
 }
 
-bool Controller::IsSteamDeck()
+bool Controller::IsDualSenseEdge()
 {
-#ifdef CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	if(!controller)
 		return false;
-	return is_steamdeck;
+	return is_dualsense_edge;
 #endif
 	return false;
+}
+
+bool Controller::IsHandheld()
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return false;
+	return is_handheld;
+#endif
+	return false;
+}
+
+bool Controller::IsSteamVirtual()
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return false;
+	return is_steam_virtual;
+#endif
+	return false;
+}
+
+bool Controller::IsSteamVirtualUnmasked()
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return false;
+	return is_steam_virtual_unmasked;
+#endif
+	return false;
+}
+
+void Controller::resetMotionControls()
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return;
+	chiaki_accel_new_zero_set_active(&accel_zero, real_accel.accel_x, real_accel.accel_y, real_accel.accel_z, false);
+	chiaki_orientation_tracker_init(&orientation_tracker);
+	chiaki_orientation_tracker_update(
+		&orientation_tracker, state.gyro_x, state.gyro_y, state.gyro_z,
+		real_accel.accel_x, real_accel.accel_y, real_accel.accel_z, &accel_zero, false, last_motion_timestamp);
+	chiaki_orientation_tracker_apply_to_controller_state(&orientation_tracker, &state);
+#endif
 }

@@ -15,6 +15,7 @@ struct DiscoveryHost
 {
 	bool ps5;
 	ChiakiDiscoveryHostState state;
+	ChiakiTarget target;
 	uint16_t host_request_port;
 #define STRING_MEMBER(name) QString name;
 	CHIAKI_DISCOVERY_HOST_STRING_FOREACH(STRING_MEMBER)
@@ -33,7 +34,6 @@ struct ManualService
 	bool discovered = false;
 	DiscoveryHost discovery_host;
 	ChiakiDiscoveryService service;
-	ChiakiDiscoveryService service_ipv6;
 };
 
 class Settings;
@@ -46,9 +46,11 @@ class DiscoveryManager : public QObject
 
 	private:
 		ChiakiLog log;
+		QList<ChiakiDiscoveryService> services;
 		ChiakiDiscoveryService service;
 		ChiakiDiscoveryService service_ipv6;
 		bool service_active;
+		bool service_active_ipv6;
 		QList<DiscoveryHost> hosts;
 		Settings *settings = {};
 		QHash<QString, ManualService*> manual_services;

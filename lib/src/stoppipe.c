@@ -313,11 +313,6 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stop_pipe_connect(ChiakiStopPipe *stop_pipe
 	socklen_t sockerr_sz = sizeof(sockerr);
 	if(getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)(&sockerr), &sockerr_sz) < 0)
 		return CHIAKI_ERR_UNKNOWN;
-// #elif defined(__PSVITA__)
-//	int sockerr;
-// 	socklen_t sockerr_sz = sizeof(sockerr);
-// 	if(sceNetGetsockopt(fd, SCE_NET_SOL_SOCKET, SCE_NET_SO_ERROR, &sockerr, &sockerr_sz) < 0)
-// 		return CHIAKI_ERR_UNKNOWN;
 #else
 	int sockerr;
 	socklen_t sockerr_sz = sizeof(sockerr);

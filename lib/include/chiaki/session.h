@@ -14,9 +14,7 @@
 #include "audio.h"
 #include "controller.h"
 #include "stoppipe.h"
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 #include "remote/holepunch.h"
-#endif
 #include "remote/rudp.h"
 #include "regist.h"
 
@@ -84,11 +82,12 @@ typedef struct chiaki_connect_info_t
 	bool video_profile_auto_downgrade; // Downgrade video_profile if server does not seem to support it.
 	bool enable_keyboard;
 	bool enable_dualsense;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
+	ChiakiDisableAudioVideo audio_video_disabled;
+	bool auto_regist;
 	ChiakiHolepunchSession holepunch_session;
-#endif
 	chiaki_socket_t *rudp_sock;
 	uint8_t psn_account_id[CHIAKI_PSN_ACCOUNT_ID_SIZE];
+	double packet_loss_max;
 } ChiakiConnectInfo;
 
 
@@ -151,6 +150,7 @@ typedef enum {
 	CHIAKI_EVENT_CONNECTED,
 	CHIAKI_EVENT_LOGIN_PIN_REQUEST,
 	CHIAKI_EVENT_HOLEPUNCH,
+	CHIAKI_EVENT_REGIST,
 	CHIAKI_EVENT_NICKNAME_RECEIVED,
 	CHIAKI_EVENT_KEYBOARD_OPEN,
 	CHIAKI_EVENT_KEYBOARD_TEXT_CHANGE,
@@ -158,6 +158,10 @@ typedef enum {
 	CHIAKI_EVENT_RUMBLE,
 	CHIAKI_EVENT_QUIT,
 	CHIAKI_EVENT_TRIGGER_EFFECTS,
+	CHIAKI_EVENT_MOTION_RESET,
+	CHIAKI_EVENT_LED_COLOR,
+	CHIAKI_EVENT_HAPTIC_INTENSITY,
+	CHIAKI_EVENT_TRIGGER_INTENSITY,
 } ChiakiEventType;
 
 typedef struct chiaki_event_t
@@ -168,7 +172,9 @@ typedef struct chiaki_event_t
 		ChiakiQuitEvent quit;
 		ChiakiKeyboardEvent keyboard;
 		ChiakiRumbleEvent rumble;
+		ChiakiRegisteredHost host;
 		ChiakiTriggerEffectsEvent trigger_effects;
+		uint8_t led_state[0x3];
 		struct
 		{
 			bool pin_incorrect; // false on first request, true if the pin entered before was incorrect
@@ -177,6 +183,7 @@ typedef struct chiaki_event_t
 		{
 			bool finished; // false when punching hole, true when finished
 		} data_holepunch;
+		ChiakiDualSenseEffectIntensity intensity;
 		char server_nickname[0x20];
 	};
 } ChiakiEvent;
@@ -204,6 +211,7 @@ typedef struct chiaki_session_t
 		uint8_t did[CHIAKI_RP_DID_SIZE];
 		ChiakiConnectVideoProfile video_profile;
 		bool video_profile_auto_downgrade;
+		ChiakiDisableAudioVideo disable_audio_video;
 		bool enable_keyboard;
 		bool enable_dualsense;
 		uint8_t psn_account_id[CHIAKI_PSN_ACCOUNT_ID_SIZE];
@@ -236,6 +244,7 @@ typedef struct chiaki_session_t
 	ChiakiCond state_cond;
 	ChiakiMutex state_mutex;
 	ChiakiStopPipe stop_pipe;
+	bool auto_regist;
 	bool should_stop;
 	bool ctrl_failed;
 	bool ctrl_session_id_received;
@@ -248,9 +257,7 @@ typedef struct chiaki_session_t
 	size_t login_pin_size;
 
 	ChiakiCtrl ctrl;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	ChiakiHolepunchSession holepunch_session;
-#endif
 	ChiakiRudp rudp;
 
 	ChiakiLog *log;

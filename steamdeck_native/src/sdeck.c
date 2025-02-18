@@ -22,7 +22,7 @@
 #define ACCEL_MOVESPEED_MULT 1.5f
 // sqrt(qw^2 + qx^2 + qy^2 qz^2) approx. above constant due to normalization
 #define STEAM_DECK_ORIENT_FUZZ 24.0f
-#define STEAM_DECK_ACCEL_FUZZ 256.0f
+#define STEAM_DECK_ACCEL_FUZZ 12.0f
 #define FUZZ_FILTER_PREV_WEIGHT 0.75f
 #define FUZZ_FILTER_PREV_WEIGHT2x 0.6f
 #define STEAM_DECK_GYRO_DEADZONE 24.0f
@@ -343,10 +343,10 @@ void find_repeat(double * data, const int num_samples, const double frequency, c
 	const int repeat_max = 20;
 	*total_avg = 0;
 	*repeat_count = 0;
-	printf("\ninterval length is %i, num_samples is: %i\n", interval_length, num_samples);
+	// printf("\ninterval length is %i, num_samples is: %i\n", interval_length, num_samples);
 	for (int i = 0; i < num_samples; i++)
 	{
-		avg += abs(data[i]);
+		avg += fabs(data[i]);
 		if ((i + 1) % interval_length == 0)
 		{
 			avg /= interval_length;
@@ -389,7 +389,7 @@ int play_pcm_haptic(SDeck *sdeck, uint8_t position, int16_t *buf, const int num_
 	avg = 5 * freq_power;
 	if (avg < avg_min)
 		return 0;
-	repeat = STEAM_DECK_HAPTIC_INTENSITY * num_elements * freq / (double)sampling_rate;
+	repeat = (STEAM_DECK_HAPTIC_INTENSITY * num_elements * freq) / (double)sampling_rate;
 	repeat = (repeat > 1) ? repeat : 1;
 	playtime = sdeck_haptic_ratio(sdeck, position, freq, interval, 0.2, repeat);
 	if (playtime < 0)
@@ -426,7 +426,7 @@ int send_haptic(SDeck *sdeck, uint8_t position, uint16_t period_high, uint16_t p
 int sdeck_haptic(SDeck *sdeck, uint8_t position, double frequency, uint32_t interval, const uint16_t repeat)
 {
 	int res = 0;
-	double freq_min = 500000 / interval; // can play haptic for at most 2 intervals w/ borrow from future
+	double freq_min = 500000.0 / (double)interval; // can play haptic for at most 2 intervals w/ borrow from future
 	uint16_t period = 0;
 	if (frequency >= freq_min)
 	{
@@ -445,7 +445,7 @@ int sdeck_haptic_ratio(SDeck *sdeck, uint8_t position, double frequency, uint32_
 	double ratio_high = 0, ratio_low = 0;
 	ratio_high = 2 * ratio;
 	ratio_low = 2 - ratio_high;
-	double freq_min = 500000 / interval; // can play haptic for at most 2 intervals w/ borrow from future
+	double freq_min = 500000.0 / (double)interval; // can play haptic for at most 2 intervals w/ borrow from future
 	uint16_t period = 0;
 	if (frequency >= freq_min)
 	{

@@ -148,14 +148,10 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_recv_http_header(int sock, char *buf, size_
 				return err;
 		}
 
-		int received;
+		CHIAKI_SSIZET_TYPE received;
 		do
 		{
-		// #ifdef __PSVITA__
-		// 	received = (int)sceNetRecv(sock, buf, (int)buf_size, 0);
-		// #else
-			received = (int)recv(sock, buf, (int)buf_size, 0);
-		// #endif
+			received = recv(sock, buf, (int)buf_size, 0);
 #if _WIN32
 		} while(false);
 #else

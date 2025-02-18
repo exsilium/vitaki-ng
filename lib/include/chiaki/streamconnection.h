@@ -20,6 +20,13 @@ extern "C" {
 
 typedef struct chiaki_session_t ChiakiSession;
 
+typedef enum chiaki_dualsense_effect_intensity_t
+{
+	Off = 0,
+	Weak = 3,
+	Medium = 2,
+	Strong = 1,
+} ChiakiDualSenseEffectIntensity;
 typedef struct chiaki_stream_connection_t
 {
 	struct chiaki_session_t *session;
@@ -28,12 +35,18 @@ typedef struct chiaki_stream_connection_t
 	uint8_t *ecdh_secret;
 	ChiakiGKCrypt *gkcrypt_local;
 	ChiakiGKCrypt *gkcrypt_remote;
+	uint8_t *streaminfo_early_buf;
+	size_t streaminfo_early_buf_size;
 
 	ChiakiPacketStats packet_stats;
 	ChiakiAudioReceiver *audio_receiver;
 	ChiakiVideoReceiver *video_receiver;
 	ChiakiAudioReceiver *haptics_receiver;
-
+	double packet_loss_max;
+	uint8_t motion_counter[4];
+	uint8_t led_state[3];
+	ChiakiDualSenseEffectIntensity haptic_intensity;
+	ChiakiDualSenseEffectIntensity trigger_intensity;
 	ChiakiFeedbackSender feedback_sender;
 	ChiakiCongestionControl congestion_control;
 	/**
@@ -71,7 +84,7 @@ typedef struct chiaki_stream_connection_t
 	double measured_bitrate;
 } ChiakiStreamConnection;
 
-CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_init(ChiakiStreamConnection *stream_connection, ChiakiSession *session);
+CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_init(ChiakiStreamConnection *stream_connection, ChiakiSession *session, double packet_loss_max);
 CHIAKI_EXPORT void chiaki_stream_connection_fini(ChiakiStreamConnection *stream_connection);
 
 /**

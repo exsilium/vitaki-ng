@@ -2,27 +2,41 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
 import QtQuick.Controls.Material
+import "controls" as C
 
 Dialog {
     id: dialog
     property alias text: label.text
     property var callback
+    property var rejectCallback
+    property bool newDialogOpen: false
     property Item restoreFocusItem
     parent: Overlay.overlay
     x: Math.round((root.width - width) / 2)
     y: Math.round((root.height - height) / 2)
     modal: true
     Material.roundedScale: Material.MediumScale
-    onOpened: label.forceActiveFocus()
+    onOpened: label.forceActiveFocus(Qt.TabFocusReason)
     onAccepted: {
+        newDialogOpen = true;
         restoreFocus();
         callback();
     }
-    onRejected: restoreFocus()
+    onClosed: if(!newDialogOpen) { restoreFocus() }
+
+    onRejected: {
+        if(rejectCallback)
+        {
+            newDialogOpen = true;
+            restoreFocus();
+            rejectCallback();
+        }
+    }
 
     function restoreFocus() {
         if (restoreFocusItem)
-            restoreFocusItem.forceActiveFocus(Qt.TabFocus);
+            restoreFocusItem.forceActiveFocus(Qt.TabFocusReason);
+        label.focus = false;
     }
 
     Component.onCompleted: {
@@ -36,8 +50,8 @@ Dialog {
 
         Label {
             id: label
-            Keys.onReturnPressed: dialog.accept()
             Keys.onEscapePressed: dialog.reject()
+            Keys.onReturnPressed: dialog.accept()
         }
 
         RowLayout {
@@ -45,8 +59,8 @@ Dialog {
             spacing: 20
 
             Button {
-                focusPolicy: Qt.NoFocus
                 text: qsTr("Yes")
+                Material.background: Material.accent
                 flat: true
                 leftPadding: 50
                 onClicked: dialog.accept()
@@ -66,7 +80,7 @@ Dialog {
             }
 
             Button {
-                focusPolicy: Qt.NoFocus
+                Material.background: Material.accent
                 text: qsTr("No")
                 flat: true
                 leftPadding: 50

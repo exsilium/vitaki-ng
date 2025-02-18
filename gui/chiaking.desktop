@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+<<<<<<<< HEAD:gui/chiaki4deck.desktop
+Name=chiaki4deck
+Comment=PlayStation Remote Play Client
+Exec=chiaki
+Icon=chiaki4deck
+Categories=Game;
+========
+Name=chiaki-ng
+Comment=PlayStation Remote Play Client
+Exec=chiaki
+Icon=chiaking
+Categories=Game;Network;RemoteAccess;
+>>>>>>>> upstream/main:gui/chiaking.desktop

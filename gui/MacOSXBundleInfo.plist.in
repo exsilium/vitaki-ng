@@ -14,6 +14,8 @@
 	<string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
 	<key>CFBundleName</key>
 	<string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
 	<key>CFBundlePackageType</key>
@@ -29,7 +31,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>For mic support, Chiaki4deck requires access to your microphone.</string>
+	<string>For mic support, chiaki-ng requires access to your microphone.</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.games</string>
 </dict>

@@ -342,7 +342,7 @@ static void set_timeout(struct timespec *timeout, uint64_t ms_from_now)
 }
 #endif
 
-#if !__APPLE__
+#if !__APPLE__ && !__SWITCH__
 CHIAKI_EXPORT ChiakiErrorCode chiaki_thread_timedjoin(ChiakiThread *thread, void **retval, uint64_t timeout_ms)
 {
 #if _WIN32
@@ -351,21 +351,6 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_thread_timedjoin(ChiakiThread *thread, void
 		return CHIAKI_ERR_THREAD;
 	if(retval)
 		*retval = thread->ret;
-#elif defined(__PSVITA__)
-	// FIXME ywnico: check implementation
-	// Note: sceKernelWaitThreadEnd takes timeout in microseconds, not milliseconds
-	thread->timeout_us = timeout_ms * 1000;
-	int r = sceKernelWaitThreadEnd(thread->thread_id, 0, &thread->timeout_us);
-	if (r < 0) {
-		return CHIAKI_ERR_THREAD;
-	}
-	r = sceKernelDeleteThread(thread->thread_id);
-	if (r < 0) {
-		return CHIAKI_ERR_THREAD;
-	}
-	if (retval) {
-		*retval = thread->ret;
-	}
 #else
 	struct timespec timeout;
 	set_timeout(&timeout, timeout_ms);

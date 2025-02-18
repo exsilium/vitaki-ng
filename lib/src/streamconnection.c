@@ -10,6 +10,7 @@
 #include <chiaki/video.h>
 
 #include <string.h>
+#include <inttypes.h>
 #include <assert.h>
 #ifndef _WIN32
 #include <unistd.h>
@@ -47,6 +48,7 @@ static void stream_connection_takion_cb(ChiakiTakionEvent *event, void *user);
 static void stream_connection_takion_data(ChiakiStreamConnection *stream_connection, ChiakiTakionMessageDataType data_type, uint8_t *buf, size_t buf_size);
 static void stream_connection_takion_data_protobuf(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size);
 static void stream_connection_takion_data_rumble(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size);
+static void stream_connection_takion_data_pad_info(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size);
 static void stream_connection_takion_data_trigger_effects(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size);
 static ChiakiErrorCode stream_connection_send_big(ChiakiStreamConnection *stream_connection);
 static ChiakiErrorCode stream_connection_send_controller_connection(ChiakiStreamConnection *stream_connection);
@@ -59,14 +61,22 @@ static ChiakiErrorCode stream_connection_send_streaminfo_ack(ChiakiStreamConnect
 static void stream_connection_takion_av(ChiakiStreamConnection *stream_connection, ChiakiTakionAVPacket *packet);
 static ChiakiErrorCode stream_connection_send_heartbeat(ChiakiStreamConnection *stream_connection);
 
-CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_init(ChiakiStreamConnection *stream_connection, ChiakiSession *session)
+CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_init(ChiakiStreamConnection *stream_connection, ChiakiSession *session, double packet_loss_max)
 {
 	stream_connection->session = session;
 	stream_connection->log = session->log;
+	stream_connection->packet_loss_max = packet_loss_max;
 
 	stream_connection->ecdh_secret = NULL;
 	stream_connection->gkcrypt_remote = NULL;
 	stream_connection->gkcrypt_local = NULL;
+	stream_connection->streaminfo_early_buf = NULL;
+	stream_connection->streaminfo_early_buf_size = 0;
+	memset(stream_connection->motion_counter, 0, sizeof(stream_connection->motion_counter));
+	memset(stream_connection->led_state, 0, sizeof(stream_connection->led_state));
+
+	stream_connection->haptic_intensity = Strong;
+	stream_connection->trigger_intensity = Strong;
 
 	ChiakiErrorCode err = chiaki_mutex_init(&stream_connection->state_mutex, false);
 	if(err != CHIAKI_ERR_SUCCESS)
@@ -143,6 +153,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 
 	ChiakiTakionConnectInfo takion_info;
 	takion_info.log = stream_connection->log;
+	takion_info.disable_audio_video = stream_connection->session->connect_info.disable_audio_video;
 	takion_info.close_socket = true;
 	if(!socket)
 	{
@@ -176,6 +187,9 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 	if(!stream_connection->audio_receiver)
 	{
 		CHIAKI_LOGE(session->log, "StreamConnection failed to initialize Audio Receiver");
+		if(!socket)
+			free(takion_info.sa);
+		chiaki_mutex_unlock(&stream_connection->state_mutex);
 		return CHIAKI_ERR_UNKNOWN;
 	}
 
@@ -184,6 +198,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 	{
 		CHIAKI_LOGE(session->log, "StreamConnection failed to initialize Haptics Receiver");
 		err = CHIAKI_ERR_UNKNOWN;
+		chiaki_mutex_unlock(&stream_connection->state_mutex);
 		goto err_audio_receiver;
 	}
 
@@ -192,6 +207,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 	{
 		CHIAKI_LOGE(session->log, "StreamConnection failed to initialize Video Receiver");
 		err = CHIAKI_ERR_UNKNOWN;
+		chiaki_mutex_unlock(&stream_connection->state_mutex);
 		goto err_haptics_receiver;
 	}
 
@@ -199,8 +215,6 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 	stream_connection->state_finished = false;
 	stream_connection->state_failed = false;
 	err = chiaki_takion_connect(&stream_connection->takion, &takion_info, socket);
-	if(!socket)
-		free(takion_info.sa);
 
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
@@ -209,7 +223,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 		goto err_video_receiver;
 	}
 
-	err = chiaki_congestion_control_start(&stream_connection->congestion_control, &stream_connection->takion, &stream_connection->packet_stats);
+	err = chiaki_congestion_control_start(&stream_connection->congestion_control, &stream_connection->takion, &stream_connection->packet_stats, stream_connection->packet_loss_max);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
 		CHIAKI_LOGE(session->log, "StreamConnection failed to start Congestion Control");
@@ -255,13 +269,18 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 		err = CHIAKI_ERR_UNKNOWN;
 		goto disconnect;
 	}
-
 	CHIAKI_LOGI(session->log, "StreamConnection successfully received bang");
-
 	stream_connection->state = STATE_EXPECT_STREAMINFO;
 	stream_connection->state_finished = false;
 	stream_connection->state_failed = false;
-	err = chiaki_cond_timedwait_pred(&stream_connection->state_cond, &stream_connection->state_mutex, EXPECT_TIMEOUT_MS, state_finished_cond_check, stream_connection);
+	if(stream_connection->streaminfo_early_buf)
+	{
+		stream_connection_takion_data_expect_streaminfo(stream_connection, stream_connection->streaminfo_early_buf, stream_connection->streaminfo_early_buf_size);
+		free(stream_connection->streaminfo_early_buf);
+		stream_connection->streaminfo_early_buf = NULL;
+	}
+	if(!stream_connection->state_finished)
+		err = chiaki_cond_timedwait_pred(&stream_connection->state_cond, &stream_connection->state_mutex, EXPECT_TIMEOUT_MS, state_finished_cond_check, stream_connection);
 	assert(err == CHIAKI_ERR_SUCCESS || err == CHIAKI_ERR_TIMEOUT);
 	CHECK_STOP(disconnect);
 
@@ -329,6 +348,11 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 
 disconnect:
 	CHIAKI_LOGI(session->log, "StreamConnection is disconnecting");
+	if(stream_connection->streaminfo_early_buf)
+	{
+		free(stream_connection->streaminfo_early_buf);
+		stream_connection->streaminfo_early_buf = NULL;
+	}
 	stream_connection_send_disconnect(stream_connection);
 
 	if(stream_connection->should_stop)
@@ -352,17 +376,24 @@ close_takion:
 	CHIAKI_LOGI(session->log, "StreamConnection closed takion");
 
 err_video_receiver:
+	chiaki_mutex_lock(&stream_connection->state_mutex);
 	chiaki_video_receiver_free(stream_connection->video_receiver);
 	stream_connection->video_receiver = NULL;
+	chiaki_mutex_unlock(&stream_connection->state_mutex);
 
 err_haptics_receiver:
+	chiaki_mutex_lock(&stream_connection->state_mutex);
 	chiaki_audio_receiver_free(stream_connection->haptics_receiver);
 	stream_connection->haptics_receiver = NULL;
+	chiaki_mutex_unlock(&stream_connection->state_mutex);
 
 err_audio_receiver:
+	chiaki_mutex_lock(&stream_connection->state_mutex);
 	chiaki_audio_receiver_free(stream_connection->audio_receiver);
 	stream_connection->audio_receiver = NULL;
-
+	chiaki_mutex_unlock(&stream_connection->state_mutex);
+	if(!socket)
+		free(takion_info.sa);
 	return err;
 }
 
@@ -413,6 +444,9 @@ static void stream_connection_takion_data(ChiakiStreamConnection *stream_connect
 			break;
 		case CHIAKI_TAKION_MESSAGE_DATA_TYPE_RUMBLE:
 			stream_connection_takion_data_rumble(stream_connection, buf, buf_size);
+			break;
+		case CHIAKI_TAKION_MESSAGE_DATA_TYPE_PAD_INFO:
+			stream_connection_takion_data_pad_info(stream_connection, buf, buf_size);
 			break;
 		case CHIAKI_TAKION_MESSAGE_DATA_TYPE_TRIGGER_EFFECTS:
 			stream_connection_takion_data_trigger_effects(stream_connection, buf, buf_size);
@@ -475,6 +509,130 @@ static void stream_connection_takion_data_trigger_effects(ChiakiStreamConnection
 	memcpy(&event.trigger_effects.left, buf + 5, 10);
 	memcpy(&event.trigger_effects.right, buf + 15, 10);
 	chiaki_session_send_event(stream_connection->session, &event);
+}
+
+static char* DualSenseIntensity(ChiakiDualSenseEffectIntensity intensity)
+{
+	switch(intensity)
+	{
+		case Strong:
+			return "Strong";
+			break;
+		case Weak:
+			return "Weak";
+			break;
+		case Medium:
+			return "Medium";
+			break;
+		case Off:
+			return "Off";
+			break;
+		default:
+			return "Invalid";
+			break;
+	}
+}
+static void stream_connection_takion_data_pad_info(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size)
+{
+	memcpy(stream_connection->led_state, stream_connection->motion_counter + 1, sizeof(stream_connection->led_state));
+	bool led_changed = false;
+	bool motion_reset = false;
+	bool haptic_intensity_changed = false;
+	bool trigger_intensity_changed = false;
+
+	CHIAKI_LOGV(stream_connection->log, "Pad info packet: ");
+	chiaki_log_hexdump(stream_connection->log, CHIAKI_LOG_VERBOSE, buf, buf_size);
+
+	switch(buf_size)
+	{
+		case 0x19:
+		{
+			// sequence number of feedback packet this is responding to
+			uint16_t feedback_packet_seq_num = ntohs(*(chiaki_unaligned_uint16_t *)(buf));
+			// int16_t unknown = ntohs(*(chiaki_unaligned_uint16_t *)(buf + 2));
+			uint32_t timestamp = ntohs(*(chiaki_unaligned_uint32_t *)(buf + 4));
+			if(stream_connection->haptic_intensity != buf[20])
+			{
+				stream_connection->haptic_intensity = buf[20];
+				haptic_intensity_changed = true;
+			}
+			if(stream_connection->trigger_intensity != buf[21])
+			{
+				stream_connection->trigger_intensity = buf[21];
+				trigger_intensity_changed = true;
+			}
+			if(buf[12])
+			{
+				motion_reset = true;
+				CHIAKI_LOGV(stream_connection->log, "StreamConnection received motion reset request in response to feedback packet with seqnum %"PRIu16"x , %"PRIu32" seconds after stream began", feedback_packet_seq_num, timestamp);
+			}
+			if(memcmp(buf + 9, stream_connection->led_state, 3) != 0)
+			{
+				led_changed = true;
+				memcpy(stream_connection->led_state, buf + 9, 3);
+			}
+		}
+		case 0x11:
+		{
+			if(stream_connection->haptic_intensity != buf[12])
+			{
+				stream_connection->haptic_intensity = buf[12];
+				haptic_intensity_changed = true;
+			}
+			if(stream_connection->trigger_intensity != buf[13])
+			{
+				stream_connection->trigger_intensity = buf[13];
+				trigger_intensity_changed = true;
+			}
+			if(buf[4])
+			{
+				motion_reset = true;
+			}
+			if(memcmp(buf + 1, stream_connection->led_state, 3) != 0)
+			{
+				led_changed = true;
+				memcpy(stream_connection->led_state, buf + 1, 3);
+			}
+			break;
+		}
+		default:
+		{
+			CHIAKI_LOGE(stream_connection->log, "StreamConnection got pad info with size %#llx not equal to 0x19 or 0x11",
+					(unsigned long long)buf_size);
+			return;
+		}
+	}
+	if(motion_reset)
+	{
+		CHIAKI_LOGI(stream_connection->log, "Setting motion control origin to current position");
+		ChiakiEvent event = { 0 };
+		event.type = CHIAKI_EVENT_MOTION_RESET;
+		chiaki_session_send_event(stream_connection->session, &event);
+	}
+	if(haptic_intensity_changed)
+	{
+		CHIAKI_LOGI(stream_connection->log, "Set haptic intensity to: %s", DualSenseIntensity(stream_connection->haptic_intensity));
+		ChiakiEvent event = { 0 };
+		event.type = CHIAKI_EVENT_HAPTIC_INTENSITY;
+		event.intensity = stream_connection->haptic_intensity;
+		chiaki_session_send_event(stream_connection->session, &event);
+	}
+	if(trigger_intensity_changed)
+	{
+		CHIAKI_LOGI(stream_connection->log, "Set adaptive trigger intensity to: %s", DualSenseIntensity(stream_connection->trigger_intensity));
+		ChiakiEvent event = { 0 };
+		event.type = CHIAKI_EVENT_TRIGGER_INTENSITY;
+		event.intensity = stream_connection->trigger_intensity;
+		chiaki_session_send_event(stream_connection->session, &event);
+	}
+	if(led_changed)
+	{
+		CHIAKI_LOGV(stream_connection->log, "Set LED state to - red: %x, green: %x, blue: %x", stream_connection->led_state[0], stream_connection->led_state[1], stream_connection->led_state[2]);
+		ChiakiEvent event = { 0 };
+		event.type = CHIAKI_EVENT_LED_COLOR;
+		memcpy(event.led_state, stream_connection->led_state, 3);
+		chiaki_session_send_event(stream_connection->session, &event);
+	}
 }
 
 static void stream_connection_takion_data_handle_disconnect(ChiakiStreamConnection *stream_connection, uint8_t *buf, size_t buf_size)
@@ -612,20 +770,20 @@ static void stream_connection_takion_data_expect_bang(ChiakiStreamConnection *st
 			stream_connection_takion_data_handle_disconnect(stream_connection, buf, buf_size);
 			return;
 		}
-#if defined(__PSVITA__)
-		// FIXME ywnico this is a weird workaround...
 		if(msg.type == tkproto_TakionMessage_PayloadType_STREAMINFO)
 		{
-			CHIAKI_LOGE(stream_connection->log, "StreamConnection expected bang payload but received streaminfo payload (%d)", msg.type);
-			chiaki_log_hexdump(stream_connection->log, CHIAKI_LOG_VERBOSE, buf, buf_size);
-			stream_connection->streaminfo_called_from_bang = true;
-			stream_connection_takion_data_expect_streaminfo(stream_connection, buf, buf_size);
-			return;
-		}
-#endif
+			if(!stream_connection->streaminfo_early_buf)
+			{
+				stream_connection->streaminfo_early_buf = malloc(buf_size);
+				memcpy(stream_connection->streaminfo_early_buf, buf, buf_size);
+				stream_connection->streaminfo_early_buf_size = buf_size;
+				CHIAKI_LOGI(stream_connection->log, "StreamConnection received streaminfo early, saving ...");
+				return;
+			}
 
-		CHIAKI_LOGE(stream_connection->log, "StreamConnection expected bang payload but received something else: %d", msg.type);
-		chiaki_log_hexdump(stream_connection->log, CHIAKI_LOG_VERBOSE, buf, buf_size);
+		}
+		CHIAKI_LOGW(stream_connection->log, "StreamConnection expected bang payload but received something else: %d", msg.type);
+		chiaki_log_hexdump(stream_connection->log, CHIAKI_LOG_WARNING, buf, buf_size);
 		return;
 	}
 
@@ -776,8 +934,8 @@ static void stream_connection_takion_data_expect_streaminfo(ChiakiStreamConnecti
 			return;
 		}
 
-		CHIAKI_LOGE(stream_connection->log, "StreamConnection expected streaminfo payload but received something else: %d", msg.type);
-		chiaki_log_hexdump(stream_connection->log, CHIAKI_LOG_VERBOSE, buf, buf_size);
+		CHIAKI_LOGW(stream_connection->log, "StreamConnection expected streaminfo payload but received something else");
+		chiaki_log_hexdump(stream_connection->log, CHIAKI_LOG_WARNING, buf, buf_size);
 		return;
 	}
 
@@ -932,7 +1090,6 @@ static ChiakiErrorCode stream_connection_send_big(ChiakiStreamConnection *stream
 	mtu -= 50;
 	uint32_t buf_pos = 0;
 	bool first = true;
-	CHIAKI_LOGI(stream_connection->log, "Reached stream_connection_send_big loop");
 	while((mtu < total_size + 26) || (mtu < total_size + 25 && !first))
 	{
 		if(first)
@@ -956,7 +1113,6 @@ static ChiakiErrorCode stream_connection_send_big(ChiakiStreamConnection *stream
 		else
 		  err = chiaki_takion_send_message_data_cont(&stream_connection->takion, 1, 1, buf + buf_pos, total_size, NULL);
 	}
-	CHIAKI_LOGI(stream_connection->log, "Completed stream_connection_send_big");
 	return err;
 }
 

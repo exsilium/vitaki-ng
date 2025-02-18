@@ -17,6 +17,8 @@ static QVector<QPair<uint32_t, Qt::Key>> key_map = {
     { CHIAKI_CONTROLLER_BUTTON_L1, Qt::Key_PageUp },
     { CHIAKI_CONTROLLER_BUTTON_R1, Qt::Key_PageDown },
     { CHIAKI_CONTROLLER_BUTTON_OPTIONS, Qt::Key_Menu },
+    { CHIAKI_CONTROLLER_BUTTON_L3, Qt::Key_F1},
+    { CHIAKI_CONTROLLER_BUTTON_R3, Qt::Key_F2},
 };
 
 static uint32_t escape_shortcut =
@@ -84,9 +86,34 @@ bool QmlController::isDualSense() const
     return controller->IsDualSense();
 }
 
-bool QmlController::isSteamDeck() const
+bool QmlController::isHandheld() const
 {
-    return controller->IsSteamDeck();
+    return controller->IsHandheld();
+}
+
+bool QmlController::isPS() const
+{
+    return controller->IsPS();
+}
+
+bool QmlController::isSteamVirtual() const
+{
+    return controller->IsSteamVirtual();
+}
+
+bool QmlController::isDualSenseEdge() const
+{
+    return controller->IsDualSenseEdge();
+}
+
+QString QmlController::GetGUID() const
+{
+    return controller->GetGUIDString();
+}
+
+QString QmlController::GetVIDPID() const
+{
+    return controller->GetVIDPIDString();
 }
 
 void QmlController::sendKey(Qt::Key key, Qt::KeyboardModifiers modifiers)

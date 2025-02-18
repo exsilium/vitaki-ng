@@ -22,6 +22,14 @@ static void *congestion_control_thread_func(void *user)
 		uint64_t lost;
 		chiaki_packet_stats_get(control->stats, true, &received, &lost);
 		ChiakiTakionCongestionPacket packet = { 0 };
+		uint64_t total = received + lost;
+		control->packet_loss = total > 0 ? (double)lost / total : 0;
+		if(control->packet_loss > control->packet_loss_max)
+		{
+			CHIAKI_LOGW(control->takion->log, "Increasing received packets to reduce hit on stream quality");
+			lost = total * control->packet_loss_max;
+			received = total - lost;
+		}
 		packet.received = (uint16_t)received;
 		packet.lost = (uint16_t)lost;
 		uint64_t total = received + lost;
@@ -35,10 +43,11 @@ static void *congestion_control_thread_func(void *user)
 	return NULL;
 }
 
-CHIAKI_EXPORT ChiakiErrorCode chiaki_congestion_control_start(ChiakiCongestionControl *control, ChiakiTakion *takion, ChiakiPacketStats *stats)
+CHIAKI_EXPORT ChiakiErrorCode chiaki_congestion_control_start(ChiakiCongestionControl *control, ChiakiTakion *takion, ChiakiPacketStats *stats, double packet_loss_max)
 {
 	control->takion = takion;
 	control->stats = stats;
+	control->packet_loss_max = packet_loss_max;
 	control->packet_loss = 0;
 
 	ChiakiErrorCode err = chiaki_bool_pred_cond_init(&control->stop_cond);
@@ -66,12 +75,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_congestion_control_stop(ChiakiCongestionCon
 	err = chiaki_thread_join(&control->thread, NULL);
 	if(err != CHIAKI_ERR_SUCCESS)
 		return err;
-	// FIXME ywnico check what to set thread_id to
-	#ifdef __PSVITA__
-	control->thread.thread_id = 0;
-	#else
 	control->thread.thread = 0;
-	#endif
 
 	return chiaki_bool_pred_cond_fini(&control->stop_cond);
 }

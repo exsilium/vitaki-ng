@@ -13,6 +13,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
+#include <inttypes.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -39,9 +40,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_regist_start(ChiakiRegist *regist, ChiakiLo
 {
 	regist->log = log;
 	regist->info = *info;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	if(!regist->info.holepunch_info)
-#endif
 	{
 		regist->info.host = strdup(regist->info.host);
 		if(!regist->info.host)
@@ -166,11 +165,7 @@ static int request_header_format(char *buf, size_t buf_size, size_t payload_size
 	return cur;
 }
 
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 CHIAKI_EXPORT ChiakiErrorCode chiaki_regist_request_payload_format(ChiakiTarget target, const uint8_t *ambassador, uint8_t *buf, size_t *buf_size, ChiakiRPCrypt *crypt, const char *psn_online_id, const uint8_t *psn_account_id, uint32_t pin, ChiakiHolepunchRegistInfo *holepunch_info)
-#else
-CHIAKI_EXPORT ChiakiErrorCode chiaki_regist_request_payload_format(ChiakiTarget target, const uint8_t *ambassador, uint8_t *buf, size_t *buf_size, ChiakiRPCrypt *crypt, const char *psn_online_id, const uint8_t *psn_account_id, uint32_t pin)
-#endif
 {
 	size_t buf_size_val = *buf_size;
 	static const size_t inner_header_off = 0x1e0;
@@ -189,7 +184,6 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_regist_request_payload_format(ChiakiTarget 
 		size_t key_1_off = buf[0] >> 3;
 		uint8_t aeropause[0x10];
 		ChiakiErrorCode err;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 		if(holepunch_info)
 		{
 			err = chiaki_rpcrypt_init_regist_psn(crypt, target, ambassador, key_0_off, holepunch_info->custom_data1, holepunch_info->data1, holepunch_info->data2);
@@ -198,7 +192,6 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_regist_request_payload_format(ChiakiTarget 
 			err = chiaki_rpcrypt_aeropause_psn(target, key_1_off, aeropause, crypt->ambassador);
 		}
 		else
-#endif
 		{
 			err = chiaki_rpcrypt_init_regist(crypt, target, ambassador, key_0_off, pin);
 			if(err != CHIAKI_ERR_SUCCESS)
@@ -243,10 +236,8 @@ static void *regist_thread_func(void *user)
 	bool success = false;
 	bool psn = false;
 	// if holepunch info is filled out, this is a psn regist
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	if(regist->info.holepunch_info)
 		psn = true;
-#endif
 
 	ChiakiRPCrypt crypt;
 	uint8_t ambassador[CHIAKI_RPCRYPT_KEY_SIZE];
@@ -259,11 +250,7 @@ static void *regist_thread_func(void *user)
 
 	uint8_t payload[0x400];
 	size_t payload_size = sizeof(payload);
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	err = chiaki_regist_request_payload_format(regist->info.target, ambassador, payload, &payload_size, &crypt, regist->info.psn_online_id, regist->info.psn_account_id, regist->info.pin, regist->info.holepunch_info);
-#else
-	err = chiaki_regist_request_payload_format(regist->info.target, ambassador, payload, &payload_size, &crypt, regist->info.psn_online_id, regist->info.psn_account_id, regist->info.pin);
-#endif
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
 		CHIAKI_LOGE(regist->log, "Regist failed to format payload");
@@ -273,10 +260,8 @@ static void *regist_thread_func(void *user)
 	char request_header[0x100];
 	// random local addr if our local addr is not provided
 	char regist_local_addr[INET6_ADDRSTRLEN] = "10.0.2.15";
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	if(regist->info.holepunch_info)
 		memcpy(regist_local_addr, regist->info.holepunch_info->regist_local_ip, sizeof(regist_local_addr));
-#endif
 	int request_header_size = request_header_format(request_header, sizeof(request_header), payload_size, regist->info.target, regist_local_addr);
 
 	if(request_header_size < 0 || request_header_size >= sizeof(request_header))
@@ -316,14 +301,22 @@ static void *regist_thread_func(void *user)
 	}
 	else
 	{
-		int r = getaddrinfo(regist->info.host, NULL, NULL, &addrinfos);
+		struct addrinfo hints;
+		memset(&hints, 0, sizeof(hints));
+		hints.ai_socktype = SOCK_DGRAM;
+		char *ipv6 = strchr(regist->info.host, ':');
+		if(ipv6)
+			hints.ai_family = AF_INET6;
+		else
+			hints.ai_family = AF_INET;
+		int r = getaddrinfo(regist->info.host, NULL, &hints, &addrinfos);
 		if(r != 0)
 		{
 			CHIAKI_LOGE(regist->log, "Regist failed to getaddrinfo on %s", regist->info.host);
 			goto fail;
 		}
 
-		struct sockaddr_in6 recv_addr = { 0 };
+		struct sockaddr_storage recv_addr = { 0 };
 		socklen_t recv_addr_size;
 		recv_addr_size = sizeof(recv_addr);
 		err = regist_search(regist, addrinfos, (struct sockaddr *)&recv_addr, &recv_addr_size);
@@ -358,8 +351,6 @@ static void *regist_thread_func(void *user)
 		{
 #ifdef _WIN32
 			CHIAKI_LOGE(regist->log, "Regist failed to send request header: %u", WSAGetLastError());
-#elif defined(__PSVITA__)
-			CHIAKI_LOGE(regist->log, "Regist failed to send request header: 0x%x", errno);
 #else
 			CHIAKI_LOGE(regist->log, "Regist failed to send request header: %s", strerror(errno));
 #endif
@@ -382,8 +373,6 @@ static void *regist_thread_func(void *user)
 		{
 #ifdef _WIN32
 			CHIAKI_LOGE(regist->log, "Regist failed to send payload: %u", WSAGetLastError());
-#elif defined(__PSVITA__)
-			CHIAKI_LOGE(regist->log, "Regist failed to send payload: 0x%x", errno);
 #else
 			CHIAKI_LOGE(regist->log, "Regist failed to send payload: %s", strerror(errno));
 		#endif
@@ -411,8 +400,11 @@ static void *regist_thread_func(void *user)
 fail_socket:
 	if(!psn)
 	{
-		CHIAKI_SOCKET_CLOSE(sock);
-		sock = CHIAKI_INVALID_SOCKET;
+		if(!CHIAKI_SOCKET_IS_INVALID(sock))
+		{
+			CHIAKI_SOCKET_CLOSE(sock);
+			sock = CHIAKI_INVALID_SOCKET;
+		}
 	}
 fail_addrinfos:
 	if(!psn)
@@ -439,7 +431,7 @@ fail:
 static ChiakiErrorCode regist_search(ChiakiRegist *regist, struct addrinfo *addrinfos, struct sockaddr *recv_addr, socklen_t *recv_addr_size)
 {
 	CHIAKI_LOGI(regist->log, "Regist starting search");
-	struct sockaddr_in6 send_addr;
+	struct sockaddr_storage send_addr;
 	socklen_t send_addr_len = sizeof(send_addr);
 	chiaki_socket_t sock = regist_search_connect(regist, addrinfos, (struct sockaddr *)&send_addr, &send_addr_len);
 	if(CHIAKI_SOCKET_IS_INVALID(sock))
@@ -487,7 +479,7 @@ static ChiakiErrorCode regist_search(ChiakiRegist *regist, struct addrinfo *addr
 		}
 
 		uint8_t buf[0x100];
-		int n = recvfrom(sock, (CHIAKI_SOCKET_BUF_TYPE)buf, sizeof(buf) - 1, 0, recv_addr, recv_addr_size);
+		CHIAKI_SSIZET_TYPE n = recvfrom(sock, (CHIAKI_SOCKET_BUF_TYPE)buf, sizeof(buf) - 1, 0, recv_addr, recv_addr_size);
 		if(n <= 0)
 		{
 			if(n < 0)
@@ -498,7 +490,7 @@ static ChiakiErrorCode regist_search(ChiakiRegist *regist, struct addrinfo *addr
 			goto done;
 		}
 
-		CHIAKI_LOGV(regist->log, "Regist received packet: %d >= %d", n, res_size);
+		CHIAKI_LOGV(regist->log, "Regist received packet: %zd >= %zu", n, res_size);
 		chiaki_log_hexdump(regist->log, CHIAKI_LOG_VERBOSE, buf, n);
 
 		if(n >= res_size && !memcmp(buf, res, res_size))
@@ -511,14 +503,18 @@ static ChiakiErrorCode regist_search(ChiakiRegist *regist, struct addrinfo *addr
 	}
 
 done:
-	CHIAKI_SOCKET_CLOSE(sock);
-	sock = CHIAKI_INVALID_SOCKET;
+	if(!CHIAKI_SOCKET_IS_INVALID(sock))
+	{
+		CHIAKI_SOCKET_CLOSE(sock);
+		sock = CHIAKI_INVALID_SOCKET;
+	}
 	return err;
 }
 
 static chiaki_socket_t regist_search_connect(ChiakiRegist *regist, struct addrinfo *addrinfos, struct sockaddr *send_addr, socklen_t *send_addr_len)
 {
 	chiaki_socket_t sock = CHIAKI_INVALID_SOCKET;
+	bool connected = false;
 	for(struct addrinfo *ai=addrinfos; ai; ai=ai->ai_next)
 	{
 		//if(ai->ai_protocol != IPPROTO_UDP)
@@ -544,17 +540,13 @@ static chiaki_socket_t regist_search_connect(ChiakiRegist *regist, struct addrin
 		if(regist->info.broadcast)
 		{
 			const int broadcast = 1;
-#ifndef __PSVITA__
 			if(send_addr->sa_family == AF_INET)
-#endif
 			{
 				r = setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const CHIAKI_SOCKET_BUF_TYPE)&broadcast, sizeof(broadcast));
 				if(r < 0)
 				{
 #ifdef _WIN32
 					CHIAKI_LOGE(regist->log, "Regist failed to setsockopt SO_BROADCAST, error %u", WSAGetLastError());
-#elif defined(__PSVITA__)
-					CHIAKI_LOGE(regist->log, "Regist failed to setsockopt SO_BROADCAST, error 0x%x", r);
 #else
 					CHIAKI_LOGE(regist->log, "Regist failed to setsockopt SO_BROADCAST");
 #endif
@@ -567,20 +559,20 @@ static chiaki_socket_t regist_search_connect(ChiakiRegist *regist, struct addrin
 				r = bind(sock, send_addr, *send_addr_len);
 				((struct sockaddr_in *)send_addr)->sin_addr.s_addr = ip;
 			}
-#ifndef __PSVITA__
 			else
 			{
-				struct sockaddr_in6 host_addr;
-				host_addr.sin6_addr = in6addr_any;
-				host_addr.sin6_port = 0;
-				host_addr.sin6_family = AF_INET6;
-				r = bind(sock, (struct sockaddr *)&host_addr, sizeof(host_addr));
+				struct in6_addr ip;
+				memcpy(&ip, &(((struct sockaddr_in6 *)send_addr)->sin6_addr), sizeof(struct in6_addr));
+				((struct sockaddr_in6 *)send_addr)->sin6_addr = in6addr_any;
+				((struct sockaddr_in6 *)send_addr)->sin6_port = 0;
+				((struct sockaddr_in6 *)send_addr)->sin6_family = AF_INET6;
+				r = bind(sock, send_addr, *send_addr_len);
+				memcpy(&(((struct sockaddr_in6 *)send_addr)->sin6_addr), &ip, sizeof(struct in6_addr));
 			}
-#endif
 			if(r < 0)
 			{
-				CHIAKI_LOGE(regist->log, "Regist failed to bind socket");
-				goto connect_fail;
+				CHIAKI_LOGE(regist->log, "Regist failed to bind socket, trying next address...");
+				continue;
 			}
 		}
 		else
@@ -593,23 +585,33 @@ static chiaki_socket_t regist_search_connect(ChiakiRegist *regist, struct addrin
 			if(r < 0)
 			{
 #ifdef _WIN32
-				CHIAKI_LOGE(regist->log, "Regist connect failed, error %u", WSAGetLastError());
-#elif defined(__PSVITA__)
-				CHIAKI_LOGE(regist->log, "Regist connect failed, error 0x%x", r);
+				CHIAKI_LOGE(regist->log, "Regist connect failed, error %u. Trying next address...", WSAGetLastError());
 #else
 				int errsv = errno;
-				CHIAKI_LOGE(regist->log, "Regist connect failed: %s", strerror(errsv));
+				CHIAKI_LOGE(regist->log, "Regist connect failed, error: %s. Trying next address...", strerror(errsv));
 #endif
-				goto connect_fail;
+				continue;
 			}
 		}
+		connected = true;
 		break;
 
 connect_fail:
-		CHIAKI_SOCKET_CLOSE(sock);
-		sock = CHIAKI_INVALID_SOCKET;
+		if(!CHIAKI_SOCKET_IS_INVALID(sock))
+		{
+			CHIAKI_SOCKET_CLOSE(sock);
+			sock = CHIAKI_INVALID_SOCKET;
+		}
 	}
-
+	if(!connected)
+	{
+		CHIAKI_LOGI(regist->log, "Regist connect failed: tried all addresses");
+		if(!CHIAKI_SOCKET_IS_INVALID(sock))
+		{
+			CHIAKI_SOCKET_CLOSE(sock);
+			sock = CHIAKI_INVALID_SOCKET;
+		}
+	}
 	return sock;
 }
 
@@ -640,8 +642,11 @@ static chiaki_socket_t regist_request_connect(ChiakiRegist *regist, const struct
 		int errsv = errno;
 		CHIAKI_LOGE(regist->log, "Regist connect failed: %s", strerror(errsv));
 #endif
-		CHIAKI_SOCKET_CLOSE(sock);
-		sock = CHIAKI_INVALID_SOCKET;
+		if(!CHIAKI_SOCKET_IS_INVALID(sock))
+		{
+			CHIAKI_SOCKET_CLOSE(sock);
+			sock = CHIAKI_INVALID_SOCKET;
+		}
 	}
 
 	return sock;
@@ -653,14 +658,12 @@ static ChiakiErrorCode regist_recv_response(ChiakiRegist *regist, ChiakiRegister
 	size_t buf_filled_size;
 	size_t header_size;
 	ChiakiErrorCode err;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	if(regist->info.holepunch_info)
 	{
 		err = chiaki_send_recv_http_header_psn(regist->info.rudp, regist->log, &remote_counter, send_buf, send_buf_size, (char *)buf, sizeof(buf), &header_size, &buf_filled_size);
 		free(send_buf);
 	}
 	else
-#endif
 		err = chiaki_recv_http_header(sock, (char *)buf, sizeof(buf), &header_size, &buf_filled_size, &regist->stop_pipe, REGIST_REPONSE_TIMEOUT_MS);
 	if(err == CHIAKI_ERR_CANCELED)
 		return err;
@@ -670,19 +673,15 @@ static ChiakiErrorCode regist_recv_response(ChiakiRegist *regist, ChiakiRegister
 		return err;
 	}
 
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	if(regist->info.holepunch_info)
 	{
 		RudpMessage message;
 		err = chiaki_rudp_send_recv(regist->info.rudp, &message, NULL, 0, remote_counter, ACK, FINISH, 0, 3);
 		if(err != CHIAKI_ERR_SUCCESS)
-		{
-			CHIAKI_LOGE(regist->log, "REGIST - Failed to finish rudp");
-			return err;
-		}
-		chiaki_rudp_message_pointers_free(&message);
+			CHIAKI_LOGW(regist->log, "REGIST - Failed to finish rudp, continuing...");
+		else
+			chiaki_rudp_message_pointers_free(&message);
 	}
-#endif
 
 	CHIAKI_LOGV(regist->log, "Regist response HTTP header:");
 	chiaki_log_hexdump(regist->log, CHIAKI_LOG_VERBOSE, buf, header_size);
@@ -736,17 +735,15 @@ static ChiakiErrorCode regist_recv_response(ChiakiRegist *regist, ChiakiRegister
 		return CHIAKI_ERR_BUF_TOO_SMALL;
 	}
 
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	if(regist->info.holepunch_info)
 	{
 		if(buf_filled_size < content_size + header_size)
 		{
-			CHIAKI_LOGE(regist->log, "Received %lu which is less than content + header of size %lu", buf_filled_size, content_size + header_size);
+			CHIAKI_LOGE(regist->log, "Received %zu which is less than content + header of size %zu", buf_filled_size, content_size + header_size);
 			return CHIAKI_ERR_NETWORK;
 		}
 	}
 	else
-#endif
 	{
 		while(buf_filled_size < content_size + header_size)
 		{
@@ -758,7 +755,7 @@ static ChiakiErrorCode regist_recv_response(ChiakiRegist *regist, ChiakiRegister
 				return err;
 			}
 
-			int received = recv(sock,  (CHIAKI_SOCKET_BUF_TYPE)buf + buf_filled_size, (content_size + header_size) - buf_filled_size, 0);
+			CHIAKI_SSIZET_TYPE received = recv(sock,  (CHIAKI_SOCKET_BUF_TYPE)buf + buf_filled_size, (content_size + header_size) - buf_filled_size, 0);
 			if(received <= 0)
 			{
 				CHIAKI_LOGE(regist->log, "Regist failed to receive response content");
@@ -875,7 +872,7 @@ static ChiakiErrorCode regist_parse_response_payload(ChiakiRegist *regist, Chiak
 		else if(strcmp(header->key, "RP-SupportCmd") == 0)
 		{
 			uint32_t support_cmd = (uint32_t)strtoul(header->value, NULL, 0);
-			CHIAKI_LOGI(regist->log, "RP-Support Cmd: %llu", support_cmd);
+			CHIAKI_LOGI(regist->log, "RP-Support Cmd: %"PRIu32, support_cmd);
 		}
 		else
 		{

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "streamsession.h"
+#include "settings.h"
 
 #include <QMutex>
 #include <QWindow>
@@ -43,6 +44,7 @@ class QmlMainWindow : public QWindow
     Q_PROPERTY(VideoMode videoMode READ videoMode WRITE setVideoMode NOTIFY videoModeChanged)
     Q_PROPERTY(float ZoomFactor READ zoomFactor WRITE setZoomFactor NOTIFY zoomFactorChanged)
     Q_PROPERTY(VideoPreset videoPreset READ videoPreset WRITE setVideoPreset NOTIFY videoPresetChanged)
+    Q_PROPERTY(bool directStream READ directStream NOTIFY directStreamChanged)
 
 public:
     enum class VideoMode {
@@ -55,17 +57,21 @@ public:
     enum class VideoPreset {
         Fast,
         Default,
-        HighQuality
+        HighQuality,
+        Custom
     };
     Q_ENUM(VideoPreset);
 
-    QmlMainWindow(Settings *settings);
+    QmlMainWindow(Settings *settings,  bool exit_app_on_stream_exit = false);
     QmlMainWindow(const StreamSessionConnectInfo &connect_info);
     ~QmlMainWindow();
     void updateWindowType(WindowType type);
+    void setSettings(Settings *new_settings);
 
     bool hasVideo() const;
     int droppedFrames() const;
+
+    bool directStream() const;
 
     bool keepVideo() const;
     void setKeepVideo(bool keep);
@@ -76,12 +82,24 @@ public:
     float zoomFactor() const;
     void setZoomFactor(float factor);
 
+    bool amdCard() const;
+    bool wasMaximized() const { return was_maximized; };
+    bool isWindowAdjustable() const { return is_window_adjustable; }
+    void setWindowAdjustable(bool adjustable) { is_window_adjustable = adjustable; }
+
+    void fullscreenTime();
+    void normalTime();
+
+    bool isStreamWindowAdjustable() { return is_stream_window_adjustable; }
+    void setStreamWindowAdjustable(bool adjustable) { is_stream_window_adjustable = adjustable; }
+
     VideoPreset videoPreset() const;
     void setVideoPreset(VideoPreset mode);
 
     Q_INVOKABLE void grabInput();
     Q_INVOKABLE void releaseInput();
 
+    void updatePlacebo();
     void show();
     void presentFrame(AVFrame *frame, int32_t frames_lost);
 
@@ -95,9 +113,10 @@ signals:
     void zoomFactorChanged();
     void videoPresetChanged();
     void menuRequested();
+    void directStreamChanged();
 
 private:
-    void init(Settings *settings);
+    void init(Settings *settings, bool exit_app_on_stream_exit = false);
     void update();
     void scheduleUpdate();
     void createSwapchain();
@@ -113,13 +132,20 @@ private:
     QObject *focusObject() const override;
 
     bool has_video = false;
+    bool was_maximized = false;
+    bool amd_card = false;
+    bool direct_stream = false;
     bool keep_video = false;
     int grab_input = 0;
     int dropped_frames = 0;
+    bool is_window_adjustable = false;
+    bool is_stream_window_adjustable = false;
     int dropped_frames_current = 0;
+    bool going_full = false;
     VideoMode video_mode = VideoMode::Normal;
     float zoom_factor = 0;
     VideoPreset video_preset = VideoPreset::HighQuality;
+    Settings *settings = {};
 
     QmlBackend *backend = {};
     StreamSession *session = {};
@@ -154,6 +180,8 @@ private:
     bool quick_frame = false;
     bool quick_need_sync = false;
     std::atomic<bool> quick_need_render = {false};
+    pl_options renderparams_opts = {};
+    bool renderparams_changed = false;
 
     struct {
         PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr;
@@ -168,6 +196,7 @@ private:
         PFN_vkDestroySurfaceKHR vkDestroySurfaceKHR;
         PFN_vkWaitSemaphores vkWaitSemaphores;
         PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
+        PFN_vkGetPhysicalDeviceProperties vkGetPhysicalDeviceProperties;
     } vk_funcs;
 
     friend class QmlBackend;
