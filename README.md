@@ -7,7 +7,7 @@ An open source PlayStation Remote Play project specifically designed for PlaySta
 Feel free to contribute to the discussion and experimentation.
 
 ## Reference/Upstream projects
-- [chiaki-ng](https://streetpea.github.io/chiaki-ng)
+- [chiaki-ng](https://streetpea.github.io/chiaki-ng) - `3d2ee4594cf152cbcdcc8d10cbdf3ff2417339f3`
 - [vitaki-fork](https://github.com/ywnico/vitaki-fork) - `30a787709de0fbc555c5c7b8b9f9a8ee4a7f64e8`
 - [aa's chiaki vita port](https://git.catvibers.me/aa/chiaki)
 - [chiaki](https://sr.ht/~thestr4ng3r/chiaki/)

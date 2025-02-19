@@ -33,6 +33,8 @@
 #define SESSION_EXPECT_TIMEOUT_MS		5000
 #define STREAM_CONNECTION_SWITCH_EXPECT_TIMEOUT_MS 2000
 
+#define SESSION_EXPECT_CTRL_START_MS    10000
+
 static void *session_thread_func(void *arg);
 static void regist_cb(ChiakiRegistEvent *event, void *user);
 static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, ChiakiTarget *target_out);
@@ -180,16 +182,15 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_session_init(ChiakiSession *session, Chiaki
 	session->log = log;
 	session->quit_reason = CHIAKI_QUIT_REASON_NONE;
 	session->target = connect_info->ps5 ? CHIAKI_TARGET_PS5_1 : CHIAKI_TARGET_PS4_10;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
+	session->auto_regist = connect_info->auto_regist;
 	session->holepunch_session = connect_info->holepunch_session;
-#endif
 	session->rudp = NULL;
 
 	ChiakiErrorCode err = chiaki_mutex_init(&session->state_mutex, false);
 	if(err != CHIAKI_ERR_SUCCESS)
-		goto error_state_cond;
-
-	err = chiaki_cond_init(&session->state_cond, &session->state_mutex);
+		goto error;
+		
+	err = chiaki_mutex_init(&session->state_mutex, false);
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error;
 
@@ -198,6 +199,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_session_init(ChiakiSession *session, Chiaki
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error_state_mutex;
 
+	chiaki_mutex_lock(&session->state_mutex);
 	session->should_stop = false;
 	session->ctrl_session_id_received = false;
 	session->ctrl_login_pin_requested = false;
@@ -206,6 +208,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_session_init(ChiakiSession *session, Chiaki
 	session->stream_connection_switch_received = false;
 	session->login_pin = NULL;
 	session->login_pin_size = 0;
+	chiaki_mutex_unlock(&session->state_mutex);
 
 	err = chiaki_ctrl_init(&session->ctrl, session);
 	if(err != CHIAKI_ERR_SUCCESS)
@@ -214,22 +217,29 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_session_init(ChiakiSession *session, Chiaki
 		goto error_stop_pipe;
 	}
 
-	err = chiaki_stream_connection_init(&session->stream_connection, session);
+	err = chiaki_stream_connection_init(&session->stream_connection, session, connect_info->packet_loss_max);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
 		CHIAKI_LOGE(session->log, "StreamConnection init failed");
 		goto error_ctrl;
 	}
 
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
 	if(session->holepunch_session)
 	{
 		memcpy(session->connect_info.psn_account_id, connect_info->psn_account_id, sizeof(connect_info->psn_account_id));
 	}
 	else
-#endif
 	{
-		int r = getaddrinfo(connect_info->host, NULL, NULL, &session->connect_info.host_addrinfos);
+		// make hostname use ipv4 for now
+		struct addrinfo hints;
+		memset(&hints, 0, sizeof(hints));
+		hints.ai_socktype = SOCK_DGRAM;
+		char *ipv6 = strchr(connect_info->host, ':');
+		if(ipv6)
+			hints.ai_family = AF_INET6;
+		else
+			hints.ai_family = AF_INET;
+		int r = getaddrinfo(connect_info->host, NULL, &hints, &session->connect_info.host_addrinfos);
 		if(r != 0)
 		{
 			chiaki_session_fini(session);
@@ -242,22 +252,17 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_session_init(ChiakiSession *session, Chiaki
 	chiaki_controller_state_set_idle(&session->controller_state);
 
 	session->connect_info.ps5 = connect_info->ps5;
-	/*
-	// FIXME ywnico: This block was deleted in deck merge; do we need it?
-	#ifdef __PSVITA__
-		strcpy(session->connect_info.hostname, connect_info->host); //HACK
-	#endif
-	memcpy(session->connect_info.regist_key, connect_info->regist_key, sizeof(session->connect_info.regist_key));
-	memcpy(session->connect_info.morning, connect_info->morning, sizeof(session->connect_info.morning));
-	*/
-
 	const uint8_t did_prefix[] = { 0x00, 0x18, 0x00, 0x00, 0x00, 0x07, 0x00, 0x40, 0x00, 0x80 };
 	const uint8_t did_suffix[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 	memcpy(session->connect_info.did, did_prefix, sizeof(did_prefix));
 	chiaki_random_bytes_crypt(session->connect_info.did + sizeof(did_prefix), sizeof(session->connect_info.did) - sizeof(did_prefix) - sizeof(did_suffix));
 	memcpy(session->connect_info.did + sizeof(session->connect_info.did) - sizeof(did_suffix), did_suffix, sizeof(did_suffix));
 
-	session->connect_info.video_profile = connect_info->video_profile;
+	if(connect_info->audio_video_disabled & CHIAKI_VIDEO_DISABLED)
+		chiaki_connect_video_profile_preset(&session->connect_info.video_profile, CHIAKI_VIDEO_RESOLUTION_PRESET_360p, 0);
+	else
+		session->connect_info.video_profile = connect_info->video_profile;
+	session->connect_info.disable_audio_video = connect_info->audio_video_disabled;
 	session->connect_info.video_profile_auto_downgrade = connect_info->video_profile_auto_downgrade;
 	session->connect_info.enable_keyboard = connect_info->enable_keyboard;
 	session->connect_info.enable_dualsense = connect_info->enable_dualsense;
@@ -273,7 +278,7 @@ error_state_mutex:
 error_state_cond:
 	chiaki_cond_fini(&session->state_cond);
 error:
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
+#ifndef __PSVITA__
 	if(session->holepunch_session)
 		chiaki_holepunch_session_fini(session->holepunch_session);
 #endif
@@ -284,13 +289,16 @@ CHIAKI_EXPORT void chiaki_session_fini(ChiakiSession *session)
 {
 	if(!session)
 		return;
+    ChiakiErrorCode err = chiaki_mutex_lock(&session->state_mutex);
+	assert(err == CHIAKI_ERR_SUCCESS);
 	free(session->login_pin);
 	free(session->quit_reason_str);
+	chiaki_mutex_unlock(&session->state_mutex);
 	chiaki_stream_connection_fini(&session->stream_connection);
 	chiaki_ctrl_fini(&session->ctrl);
 	if(session->rudp)
 		chiaki_rudp_fini(session->rudp);
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
+#ifndef __PSVITA__
 	if(session->holepunch_session)
 		chiaki_holepunch_session_fini(session->holepunch_session);
 #endif
@@ -344,8 +352,9 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_session_set_controller_state(ChiakiSession 
 CHIAKI_EXPORT ChiakiErrorCode chiaki_session_set_login_pin(ChiakiSession *session, const uint8_t *pin, size_t pin_size)
 {
 	uint8_t *buf = malloc(pin_size);
-	if(!buf)
+	if(!buf){
 		return CHIAKI_ERR_MEMORY;
+	}
 	memcpy(buf, pin, pin_size);
 	ChiakiErrorCode err = chiaki_mutex_lock(&session->state_mutex);
 	assert(err == CHIAKI_ERR_SUCCESS);
@@ -438,7 +447,7 @@ static void *session_thread_func(void *arg)
 
 	CHECK_STOP(quit);
 
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
+#ifndef __PSVITA__
 	if(session->holepunch_session)
 	{
 		chiaki_socket_t *rudp_sock = chiaki_get_holepunch_sock(session->holepunch_session, CHIAKI_HOLEPUNCH_PORT_TYPE_CTRL);
@@ -455,13 +464,15 @@ static void *session_thread_func(void *arg)
 	{
 		ChiakiRegist regist;
 		ChiakiRegistInfo info;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
+#ifndef __PSVITA__
 		ChiakiHolepunchRegistInfo hinfo = chiaki_get_regist_info(session->holepunch_session);
 		info.holepunch_info = &hinfo;
 #endif
 		info.host = NULL;
 		info.broadcast = false;
 		info.psn_online_id = NULL;
+		info.pin = 0;
+		info.console_pin = 0;
 		memcpy(info.psn_account_id, session->connect_info.psn_account_id, CHIAKI_PSN_ACCOUNT_ID_SIZE);
 		info.rudp = session->rudp;
 		info.target = session->connect_info.ps5 ? CHIAKI_TARGET_PS5_1 : CHIAKI_TARGET_PS4_10;
@@ -470,6 +481,12 @@ static void *session_thread_func(void *arg)
 		chiaki_regist_stop(&regist);
 		chiaki_regist_fini(&regist);
 		CHECK_STOP(quit);
+	}
+	if(session->auto_regist)
+	{
+		CHIAKI_LOGI(session->log, "Console auto registered successfully");
+		session->quit_reason = CHIAKI_QUIT_REASON_STOPPED;
+		QUIT(quit);
 	}
 	CHIAKI_LOGI(session->log, "Starting session request for %s", session->connect_info.ps5 ? "PS5" : "PS4");
 
@@ -510,7 +527,7 @@ static void *session_thread_func(void *arg)
 	if(err != CHIAKI_ERR_SUCCESS)
 		QUIT(quit);
 
-	err = chiaki_cond_timedwait_pred(&session->state_cond, &session->state_mutex, SESSION_EXPECT_TIMEOUT_MS, session_check_state_pred_ctrl_start, session);
+	err = chiaki_cond_timedwait_pred(&session->state_cond, &session->state_mutex, SESSION_EXPECT_CTRL_START_MS, session_check_state_pred_ctrl_start, session);
 	CHECK_STOP(quit_ctrl);
 
 	if(session->ctrl_failed)
@@ -532,7 +549,6 @@ static void *session_thread_func(void *arg)
 		event.login_pin_request.pin_incorrect = pin_incorrect;
 		chiaki_session_send_event(session, &event);
 		pin_incorrect = true;
-
 		err = chiaki_cond_timedwait_pred(&session->state_cond, &session->state_mutex, UINT64_MAX, session_check_state_pred_pin, session);
 		CHECK_STOP(quit_ctrl);
 		if(session->ctrl_failed)
@@ -548,16 +564,21 @@ static void *session_thread_func(void *arg)
 		free(session->login_pin);
 		session->login_pin = NULL;
 		session->login_pin_size = 0;
-
 		// wait for session id or new login pin request
 		err = chiaki_cond_timedwait_pred(&session->state_cond, &session->state_mutex, SESSION_EXPECT_TIMEOUT_MS, session_check_state_pred_ctrl_start, session);
 		CHECK_STOP(quit_ctrl);
 	}
 
 	chiaki_socket_t *data_sock = NULL;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
+#ifndef __PSVITA__
 	if(session->rudp)
 	{
+		ChiakiErrorCode err = holepunch_session_create_offer(session->holepunch_session);
+		if (err != CHIAKI_ERR_SUCCESS)
+		{
+			CHIAKI_LOGE(session->log, "!! Failed to create offer msg for data connection");
+			CHECK_STOP(quit_ctrl);
+		}
 		CHIAKI_LOGI(session->log, "Punching hole for data connection");
 		ChiakiEvent event_start = { 0 };
 		event_start.type = CHIAKI_EVENT_HOLEPUNCH;
@@ -691,9 +712,11 @@ quit_ctrl:
 quit:
 
 	CHIAKI_LOGI(session->log, "Session has quit");
+	chiaki_mutex_lock(&session->state_mutex);
 	quit_event.type = CHIAKI_EVENT_QUIT;
 	quit_event.quit.reason = session->quit_reason;
 	quit_event.quit.reason_str = session->quit_reason_str;
+	chiaki_mutex_unlock(&session->state_mutex);
 	chiaki_session_send_event(session, &quit_event);
 	return NULL;
 
@@ -739,75 +762,6 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 	uint16_t remote_counter = 0;
 	if(session->rudp)
 	{
-/*
-		// FIXME ywnico: this block was removed in deck merge; check to see if vita hacks still needed
-		struct sockaddr *sa = malloc(ai->ai_addrlen);
-		if(!sa)
-			continue;
-		memcpy(sa, ai->ai_addr, ai->ai_addrlen);
-
-		if(sa->sa_family != AF_INET && sa->sa_family != AF_INET6)
-		{
-			free(sa);
-			continue;
-		}
-
-		set_port(sa, htons(SESSION_PORT));
-
-		#ifdef __PSVITA__
-		//  FIXME: this is broken, error 0
-		// 	int errno;
-		// 	int rid = sceNetResolverCreate("resolver", NULL, 0);
-		// 	if (rid < 0) {
-		// 		errno = rid & 0xFF;
-		// 		goto vitadns_err;
-		// 	}
-		// 	sockaddr_in* sa_in = (sockaddr_in*) sa;
-		// 	SceNetInAddr addr = { (sa_in->sin_addr).s_addr };
-		// 	int r = sceNetResolverStartAton(
-		// 		rid,
-		// 		&addr,
-		// 		session->connect_info.hostname,
-		// 		sizeof(session->connect_info.hostname),
-		// 		1500,
-		// 		3,
-		// 		0);
-		//   if (r < 0) {
-		// 	vitadns_err:
-		// 		CHIAKI_LOGE(session->log, "Failed to resolve hostname, %d", errno);
-		// 		memcpy(session->connect_info.hostname, "unknown", 8);
-		// 	}
-		// 	sceNetResolverDestroy(rid);
-		#else
-			// TODO: this can block, make cancelable somehow
-			int r = getnameinfo(sa, (socklen_t)ai->ai_addrlen, session->connect_info.hostname, sizeof(session->connect_info.hostname), NULL, 0, NI_NUMERICHOST);
-			if(r != 0)
-			{
-				CHIAKI_LOGE(session->log, "getnameinfo failed with %s, filling the hostname with fallback", gai_strerror(r));
-				memcpy(session->connect_info.hostname, "unknown", 8);
-			}
-		#endif
-
-		CHIAKI_LOGI(session->log, "Trying to request session from %s:%d", session->connect_info.hostname, SESSION_PORT);
-
-		// #ifdef __PSVITA__
-		// session_sock = sceNetSocket("", ai->ai_family, SCE_NET_SOCK_STREAM, 0);
-		// #else
-		session_sock = socket(ai->ai_family, SOCK_STREAM, 0);
-		// #endif
-		if(CHIAKI_SOCKET_IS_INVALID(session_sock))
-		{
-#ifdef _WIN32
-			CHIAKI_LOGE(session->log, "Failed to create socket to request session");
-#elif defined(__PSVITA__)
-			CHIAKI_LOGE(session->log, "Failed to create socket to request session: 0x%x", session_sock);
-#else
-			CHIAKI_LOGE(session->log, "Failed to create socket to request session: %s", strerror(errno));
-#endif
-			free(sa);
-			continue;
-		}
-*/
 		CHIAKI_LOGI(session->log, "SESSION START THREAD - Starting RUDP session");
 		RudpMessage message;
 		ChiakiErrorCode err = chiaki_rudp_send_recv(session->rudp, &message, NULL, 0, 0, INIT_REQUEST, INIT_RESPONSE, 8, 3);
@@ -885,8 +839,11 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 			{
 				CHIAKI_LOGI(session->log, "Session stopped while connecting for session request");
 				session->quit_reason = CHIAKI_QUIT_REASON_STOPPED;
-				CHIAKI_SOCKET_CLOSE(session_sock);
-				session_sock = CHIAKI_INVALID_SOCKET;
+				if(!CHIAKI_SOCKET_IS_INVALID(session_sock))
+				{
+					CHIAKI_SOCKET_CLOSE(session_sock);
+					session_sock = CHIAKI_INVALID_SOCKET;
+				}
 				free(sa);
 				break;
 			}
@@ -897,8 +854,11 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 					session->quit_reason = CHIAKI_QUIT_REASON_SESSION_REQUEST_CONNECTION_REFUSED;
 				else
 					session->quit_reason = CHIAKI_QUIT_REASON_NONE;
-				CHIAKI_SOCKET_CLOSE(session_sock);
-				session_sock = CHIAKI_INVALID_SOCKET;
+				if(!CHIAKI_SOCKET_IS_INVALID(session_sock))
+				{
+					CHIAKI_SOCKET_CLOSE(session_sock);
+					session_sock = CHIAKI_INVALID_SOCKET;
+				}
 				free(sa);
 				continue;
 			}
@@ -950,8 +910,11 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 	ChiakiErrorCode err = format_hex(regist_key_hex, sizeof(regist_key_hex), (uint8_t *)session->connect_info.regist_key, regist_key_len);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
-		CHIAKI_SOCKET_CLOSE(session_sock);
-		session_sock = CHIAKI_INVALID_SOCKET;
+		if(!CHIAKI_SOCKET_IS_INVALID(session_sock))
+		{
+			CHIAKI_SOCKET_CLOSE(session_sock);
+			session_sock = CHIAKI_INVALID_SOCKET;
+		}
 		session->quit_reason = CHIAKI_QUIT_REASON_SESSION_REQUEST_UNKNOWN;
 		return CHIAKI_ERR_UNKNOWN;
 	}
@@ -966,7 +929,7 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 
 	char send_buf[512];
 	int port = SESSION_PORT;
-#if !(defined(__SWITCH__) || defined(__PSVITA__))
+#ifndef __PSVITA__
 	if(session->holepunch_session)
 	{
 		chiaki_get_ps_selected_addr(session->holepunch_session, session->connect_info.hostname);
@@ -974,11 +937,14 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 	}
 #endif
 	int request_len = snprintf(send_buf, sizeof(send_buf), session_request_fmt,
-			path, session->connect_info.hostname, port, regist_key_hex, rp_version_str ? rp_version_str : "");
+			path, session->connect_info.hostname, port, regist_key_hex, rp_version_str);
 	if(request_len < 0 || request_len >= sizeof(send_buf))
 	{
-		CHIAKI_SOCKET_CLOSE(session_sock);
-		session_sock = CHIAKI_INVALID_SOCKET;
+		if(!CHIAKI_SOCKET_IS_INVALID(session_sock))
+		{
+			CHIAKI_SOCKET_CLOSE(session_sock);
+			session_sock = CHIAKI_INVALID_SOCKET;
+		}
 		session->quit_reason = CHIAKI_QUIT_REASON_SESSION_REQUEST_UNKNOWN;
 		return CHIAKI_ERR_UNKNOWN;
 	}
@@ -991,8 +957,11 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 		if(sent < 0)
 		{
 			CHIAKI_LOGE(session->log, "Failed to send session request");
-			CHIAKI_SOCKET_CLOSE(session_sock);
-			session_sock = CHIAKI_INVALID_SOCKET;
+			if(!CHIAKI_SOCKET_IS_INVALID(session_sock))
+			{
+				CHIAKI_SOCKET_CLOSE(session_sock);
+				session_sock = CHIAKI_INVALID_SOCKET;
+			}
 			session->quit_reason = CHIAKI_QUIT_REASON_SESSION_REQUEST_UNKNOWN;
 			return CHIAKI_ERR_NETWORK;
 		}
@@ -1018,8 +987,11 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 			CHIAKI_LOGE(session->log, "Failed to receive session request response");
 			session->quit_reason = CHIAKI_QUIT_REASON_SESSION_REQUEST_UNKNOWN;
 		}
-		CHIAKI_SOCKET_CLOSE(session_sock);
-		session_sock = CHIAKI_INVALID_SOCKET;
+		if(!CHIAKI_SOCKET_IS_INVALID(session_sock))
+		{
+			CHIAKI_SOCKET_CLOSE(session_sock);
+			session_sock = CHIAKI_INVALID_SOCKET;
+		}
 		return CHIAKI_ERR_NETWORK;
 	}
 	if(session->rudp)
@@ -1027,11 +999,9 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 		RudpMessage message;
 		err = chiaki_rudp_send_recv(session->rudp, &message, NULL, 0, remote_counter, ACK, FINISH, 0, 3);
 		if(err != CHIAKI_ERR_SUCCESS)
-		{
-			CHIAKI_LOGE(session->log, "SESSION START THREAD - Failed to finish rudp");
-			return err;
-		}
-		chiaki_rudp_message_pointers_free(&message);
+			CHIAKI_LOGW(session->log, "SESSION START THREAD - Failed to finish rudp, continuing...");
+		else
+			chiaki_rudp_message_pointers_free(&message);
 	}
 
 	ChiakiHttpResponse http_response;
@@ -1041,7 +1011,11 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
 		CHIAKI_LOGE(session->log, "Failed to parse session request response");
-		CHIAKI_SOCKET_CLOSE(session_sock);
+		if(!CHIAKI_SOCKET_IS_INVALID(session_sock))
+		{
+			CHIAKI_SOCKET_CLOSE(session_sock);
+			session_sock = CHIAKI_INVALID_SOCKET;
+		}
 		session_sock = CHIAKI_INVALID_SOCKET;
 		session->quit_reason = CHIAKI_QUIT_REASON_SESSION_REQUEST_UNKNOWN;
 		return CHIAKI_ERR_NETWORK;
@@ -1109,8 +1083,11 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 	chiaki_http_response_fini(&http_response);
 	if(!session->rudp)
 	{
-		CHIAKI_SOCKET_CLOSE(session_sock);
-		session_sock = CHIAKI_INVALID_SOCKET;
+		if(!CHIAKI_SOCKET_IS_INVALID(session_sock))
+		{
+			CHIAKI_SOCKET_CLOSE(session_sock);
+			session_sock = CHIAKI_INVALID_SOCKET;
+		}
 	}
 	return r;
 }
@@ -1122,9 +1099,16 @@ static void regist_cb(ChiakiRegistEvent *event, void *user)
 	{
 		case CHIAKI_REGIST_EVENT_TYPE_FINISHED_SUCCESS:
 			CHIAKI_LOGI(session->log, "%s successfully registered for Remote Play", event->registered_host->server_nickname);
+			if(session->auto_regist)
+			{
+				ChiakiEvent event_auto_regist = { 0 };
+				event_auto_regist.type = CHIAKI_EVENT_REGIST;
+				memcpy(&event_auto_regist.host, event->registered_host, sizeof(ChiakiRegisteredHost));
+				chiaki_session_send_event(session, &event_auto_regist);
+			}
 			memcpy(session->connect_info.morning, event->registered_host->rp_key, sizeof(session->connect_info.morning));
 			memcpy(session->connect_info.regist_key, event->registered_host->rp_regist_key, sizeof(session->connect_info.regist_key));
-			if(!session->connect_info.ps5)
+			if(!session->connect_info.ps5 && !session->auto_regist)
 			{
 				ChiakiEvent event_start = { 0 };
 				event_start.type = CHIAKI_EVENT_NICKNAME_RECEIVED;

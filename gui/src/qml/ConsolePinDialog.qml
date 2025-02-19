@@ -3,14 +3,14 @@ import QtQuick.Layouts
 import QtQuick.Controls
 import QtQuick.Controls.Material
 
-import org.streetpea.chiaki4deck
+import org.streetpea.chiaking
 
 import "controls" as C
 
 DialogView {
     property var consoleIndex
     title: qsTr("Set console pin")
-    buttonText: qsTr("✓ Set")
+    buttonText: qsTr("Set")
     buttonEnabled: pin.acceptableInput
     onAccepted: {
         Chiaki.setConsolePin(consoleIndex, pin.text.trim());

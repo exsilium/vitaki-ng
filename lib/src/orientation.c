@@ -12,6 +12,10 @@
 #define BETA_WARMUP 20.0f
 #define BETA_DEFAULT 0.05f
 
+#define ORIENT_FUZZ 0.0007f
+#define FUZZ_FILTER_PREV_WEIGHT 0.75f
+#define FUZZ_FILTER_PREV_WEIGHT2x 0.6f
+
 CHIAKI_EXPORT void chiaki_orientation_init(ChiakiOrientation *orient)
 {
 	// 90 deg rotation around x for Madgwick
@@ -22,6 +26,7 @@ CHIAKI_EXPORT void chiaki_orientation_init(ChiakiOrientation *orient)
 }
 
 static float inv_sqrt(float x);
+static void fuzz(const float cur, float *prev, const float fuzz, const float wprev, const float wprev2x);
 
 CHIAKI_EXPORT void chiaki_orientation_update(ChiakiOrientation *orient,
 		float gx, float gy, float gz, float ax, float ay, float az, float beta, float time_step_sec)
@@ -100,10 +105,30 @@ CHIAKI_EXPORT void chiaki_orientation_update(ChiakiOrientation *orient,
 	q2 *= recip_norm;
 	q3 *= recip_norm;
 
-	orient->x = q1;
-	orient->y = q2;
-	orient->z = q3;
-	orient->w = q0;
+	fuzz(q0, &orient->w, ORIENT_FUZZ, FUZZ_FILTER_PREV_WEIGHT, FUZZ_FILTER_PREV_WEIGHT2x);
+	fuzz(q1, &orient->x, ORIENT_FUZZ, FUZZ_FILTER_PREV_WEIGHT, FUZZ_FILTER_PREV_WEIGHT2x);
+	fuzz(q2, &orient->y, ORIENT_FUZZ, FUZZ_FILTER_PREV_WEIGHT, FUZZ_FILTER_PREV_WEIGHT2x);
+	fuzz(q3, &orient->z, ORIENT_FUZZ, FUZZ_FILTER_PREV_WEIGHT, FUZZ_FILTER_PREV_WEIGHT2x);
+}
+
+// input fuzz filter like the one used in kernel input system
+static void fuzz(const float cur, float *prev, const float fuzz, const float wprev, const float wprev2x)
+{
+	// smooth (0-1) is weight of previous (0.9 = 90%) to use at fuzz value
+	// wprev2x (0-1) is weight of previous (0.5 = 50%) to use at 2x fuzz value
+	if ((cur < *prev + fuzz / (float)2) && (cur > *prev - fuzz / (float)2))
+		return;
+	if ((cur < *prev + fuzz) && (cur > *prev - fuzz))
+	{
+		*prev = (wprev * *prev + (1 - wprev) * cur);
+		return;
+	}
+	if ((cur < *prev + fuzz * 2) && (cur > *prev - fuzz * 2))
+	{
+		*prev = (wprev2x * *prev + (1 - wprev2x) * cur);
+		return;
+	}
+	*prev = cur;
 }
 
 static float inv_sqrt(float x)
@@ -135,11 +160,18 @@ CHIAKI_EXPORT void chiaki_orientation_tracker_init(ChiakiOrientationTracker *tra
 }
 
 CHIAKI_EXPORT void chiaki_orientation_tracker_update(ChiakiOrientationTracker *tracker,
-		float gx, float gy, float gz, float ax, float ay, float az, uint32_t timestamp_us)
+		float gx, float gy, float gz, float ax, float ay, float az,
+		ChiakiAccelNewZero *accel_zero, bool accel_zero_applied, uint32_t timestamp_us)
 {
 	tracker->gyro_x = gx;
 	tracker->gyro_y = gy;
 	tracker->gyro_z = gz;
+	if(!accel_zero_applied)
+	{
+		ax -= accel_zero->accel_x;
+		ay -= accel_zero->accel_y;
+		az -= accel_zero->accel_z;
+	}
 	tracker->accel_x = ax;
 	tracker->accel_y = ay;
 	tracker->accel_z = az;
@@ -173,4 +205,24 @@ CHIAKI_EXPORT void chiaki_orientation_tracker_apply_to_controller_state(ChiakiOr
 	state->orient_x = COS_NEG_1_4_PI * tracker->orient.x + SIN_NEG_1_4_PI * tracker->orient.w;
 	state->orient_y = COS_NEG_1_4_PI * tracker->orient.y - SIN_NEG_1_4_PI * tracker->orient.z;
 	state->orient_z = COS_NEG_1_4_PI * tracker->orient.z + SIN_NEG_1_4_PI * tracker->orient.y;
+}
+
+CHIAKI_EXPORT void chiaki_accel_new_zero_set_inactive(ChiakiAccelNewZero *accel_zero, bool real_accel)
+{
+	accel_zero->accel_x = 0.0f;
+	if(real_accel)
+		accel_zero->accel_y = 1.0f;
+	else
+		accel_zero->accel_y = 0.0f;
+	accel_zero->accel_z = 0.0f;
+}
+
+CHIAKI_EXPORT void chiaki_accel_new_zero_set_active(ChiakiAccelNewZero *accel_zero, float accel_x, float accel_y, float accel_z, bool real_accel)
+{
+	accel_zero->accel_x = accel_x;
+	if(real_accel)
+		accel_zero->accel_y = accel_y;
+	else
+		accel_zero->accel_y = accel_y - 1.0f;
+	accel_zero->accel_z = accel_z;
 }

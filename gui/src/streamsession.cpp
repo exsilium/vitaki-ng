@@ -12,13 +12,17 @@
 #include "../../lib/src/utils.h"
 
 #include <QKeyEvent>
+#include <QtMath>
 
 #include <cstring>
 
 #define SETSU_UPDATE_INTERVAL_MS 4
 #define STEAMDECK_UPDATE_INTERVAL_MS 4
 #define STEAMDECK_HAPTIC_INTERVAL_MS 10 // check every interval
+#define NEW_DPAD_TOUCH_INTERVAL_MS 500
+#define DPAD_TOUCH_UPDATE_INTERVAL_MS 10
 #define STEAMDECK_HAPTIC_PACKETS_PER_ANALYSIS 4 // send packets every interval * packets per analysis
+#define RUMBLE_HAPTICS_PACKETS_PER_RUMBLE 3
 #define STEAMDECK_HAPTIC_SAMPLING_RATE 3000
 // DualShock4 touchpad is 1920 x 942
 #define PS4_TOUCHPAD_MAX_X 1920.0f
@@ -26,6 +30,8 @@
 // DualSense touchpad is 1919 x 1079
 #define PS5_TOUCHPAD_MAX_X 1919.0f
 #define PS5_TOUCHPAD_MAX_Y 1079.0f
+#define SESSION_RETRY_SECONDS 20
+#define HAPTIC_RUMBLE_MIN_STRENGTH 100
 
 #define MICROPHONE_SAMPLES 480
 #ifdef Q_OS_LINUX
@@ -37,14 +43,40 @@
 #define ECHO_QUEUE_MAX 40
 #endif
 
+static bool isLocalAddress(QString host)
+{
+    if(host.contains("."))
+    {
+        if(host.startsWith("10."))
+            return true;
+        else if(host.startsWith("192.168."))
+            return true;
+        for (int j = 16; j < 32; j++)
+        {
+            if(host.startsWith(QString("172.") + QString::number(j) + QString(".")))
+                return true;
+        }
+    }
+    else if(host.contains(":"))
+    {
+        if(host.startsWith("FC", Qt::CaseInsensitive))
+            return true;
+        if(host.startsWith("FD", Qt::CaseInsensitive))
+            return true;
+    }
+    return false;
+}
+
 StreamSessionConnectInfo::StreamSessionConnectInfo(
 		Settings *settings,
 		ChiakiTarget target,
 		QString host,
+		QString nickname,
 		QByteArray regist_key,
 		QByteArray morning,
 		QString initial_login_pin,
 		QString duid,
+		bool auto_regist,
 		bool fullscreen, 
 		bool zoom, 
 		bool stretch)
@@ -57,21 +89,32 @@ StreamSessionConnectInfo::StreamSessionConnectInfo(
 	audio_out_device = settings->GetAudioOutDevice();
 	audio_in_device = settings->GetAudioInDevice();
 	log_level_mask = settings->GetLogLevelMask();
+	audio_volume = settings->GetAudioVolume();
 	log_file = CreateLogFilename();
-	video_profile = settings->GetVideoProfile();
+	// local connection
+	if(duid.isEmpty() && isLocalAddress(host))
+		video_profile = chiaki_target_is_ps5(target) ? settings->GetVideoProfileLocalPS5(): settings->GetVideoProfileLocalPS4();
+	// remote connection
+	else
+		video_profile = chiaki_target_is_ps5(target) ? settings->GetVideoProfileRemotePS5(): settings->GetVideoProfileRemotePS4();
 	this->target = target;
-	this->host = host;
-	this->regist_key = regist_key;
-	this->morning = morning;
-	this->initial_login_pin = initial_login_pin;
+	this->nickname = std::move(nickname);
+	this->host = std::move(host);
+	this->regist_key = std::move(regist_key);
+	this->morning = std::move(morning);
+	this->initial_login_pin = std::move(initial_login_pin);
 	audio_buffer_size = settings->GetAudioBufferSize();
 	this->fullscreen = fullscreen;
 	this->zoom = zoom;
 	this->stretch = stretch;
 	this->enable_keyboard = false; // TODO: from settings
-	this->enable_dualsense = settings->GetDualSenseEnabled();
+	this->enable_dualsense = true;
+	this->rumble_haptics_intensity = settings->GetRumbleHapticsIntensity();
 	this->buttons_by_pos = settings->GetButtonsByPosition();
 	this->start_mic_unmuted = settings->GetStartMicUnmuted();
+	this->packet_loss_max = settings->GetPacketLossMax();
+	this->audio_video_disabled = settings->GetAudioVideoDisabled();
+	this->haptic_override = settings->GetHapticOverride();
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 	this->enable_steamdeck_haptics = settings->GetSteamDeckHapticsEnabled();
 	this->vertical_sdeck = settings->GetVerticalDeckEnabled();
@@ -83,7 +126,21 @@ StreamSessionConnectInfo::StreamSessionConnectInfo(
 #endif
 	this->psn_token = settings->GetPsnAuthToken();
 	this->psn_account_id = settings->GetPsnAccountId();
-	this->duid = duid;
+	this->duid = std::move(duid);
+	this->auto_regist = auto_regist;
+	this->dpad_touch_increment = settings->GetDpadTouchEnabled() ? settings->GetDpadTouchIncrement(): 0;
+	this->dpad_touch_shortcut1 = settings->GetDpadTouchShortcut1();
+	if(this->dpad_touch_shortcut1 > 0)
+		this->dpad_touch_shortcut1 = 1 << (this->dpad_touch_shortcut1 - 1);
+	this->dpad_touch_shortcut2 = settings->GetDpadTouchShortcut2();
+	if(this->dpad_touch_shortcut2 > 0)
+		this->dpad_touch_shortcut2 = 1 << (this->dpad_touch_shortcut2 - 1);
+	this->dpad_touch_shortcut3 = settings->GetDpadTouchShortcut3();
+	if(this->dpad_touch_shortcut3 > 0)
+		this->dpad_touch_shortcut3 = 1 << (this->dpad_touch_shortcut3 - 1);
+	this->dpad_touch_shortcut4 = settings->GetDpadTouchShortcut4();
+	if(this->dpad_touch_shortcut4 > 0)
+		this->dpad_touch_shortcut4 = 1 << (this->dpad_touch_shortcut4 - 1);
 }
 
 static void AudioSettingsCb(uint32_t channels, uint32_t rate, void *user);
@@ -112,18 +169,24 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 	audio_out(0),
 	audio_in(0),
 	haptics_output(0),
+	haptics_handheld(0),
 	session_started(false),
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 	sdeck_haptics_senderl(nullptr),
 	sdeck_haptics_senderr(nullptr),
-	haptics_sdeck(0),
+	sdeck(nullptr),
 #endif
 #if CHIAKI_GUI_ENABLE_SPEEX
 	echo_resampler_buf(nullptr),
 	mic_resampler_buf(nullptr),
 #endif
 	haptics_resampler_buf(nullptr),
-	holepunch_session(nullptr)
+	holepunch_session(nullptr),
+	rumble_multiplier(1),
+	ps5_rumble_intensity(0x00),
+	ps5_trigger_intensity(0x00),
+	rumble_haptics_connected(false),
+	rumble_haptics_on(false)
 {
 	mic_buf.buf = nullptr;
 	connected = false;
@@ -133,12 +196,12 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 	mic_authorization = false;
 #endif
 	allow_unmute = false;
-	rumbleHaptics = false;
+	dpad_regular = true;
+	dpad_regular_touch_switched = false;
+	rumble_haptics_intensity = RumbleHapticsIntensity::Off;
 	input_block = 0;
+	memset(led_color, 0, sizeof(led_color));
 	ChiakiErrorCode err;
-#if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
-    haptics_sdeck = 0;
-#endif
 #if CHIAKI_LIB_ENABLE_PI_DECODER
 	if(connect_info.decoder == Decoder::Pi)
 	{
@@ -168,6 +231,7 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 #if CHIAKI_LIB_ENABLE_PI_DECODER
 	}
 #endif
+	audio_volume = connect_info.audio_volume;
 	start_mic_unmuted = connect_info.start_mic_unmuted;
 	audio_out_device_name = connect_info.audio_out_device;
 	audio_in_device_name = connect_info.audio_in_device;
@@ -204,7 +268,15 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 	chiaki_connect_info.video_profile_auto_downgrade = true;
 	chiaki_connect_info.enable_keyboard = false;
 	chiaki_connect_info.enable_dualsense = connect_info.enable_dualsense;
+	chiaki_connect_info.packet_loss_max = connect_info.packet_loss_max;
+	chiaki_connect_info.auto_regist = connect_info.auto_regist;
+	chiaki_connect_info.audio_video_disabled = connect_info.audio_video_disabled;
 
+	dpad_touch_shortcut1 = connect_info.dpad_touch_shortcut1;
+	dpad_touch_shortcut2 = connect_info.dpad_touch_shortcut2;
+	dpad_touch_shortcut3 = connect_info.dpad_touch_shortcut3;
+	dpad_touch_shortcut4 = connect_info.dpad_touch_shortcut4;
+	haptic_override = connect_info.haptic_override;
 #if CHIAKI_LIB_ENABLE_PI_DECODER
 	if(connect_info.decoder == Decoder::Pi && chiaki_connect_info.video_profile.codec != CHIAKI_CODEC_H264)
 	{
@@ -238,6 +310,24 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 	chiaki_controller_state_set_idle(&touch_state);
 	touch_tracker=QMap<int, uint8_t>();
 	mouse_touch_id=-1;
+	dpad_touch_id =-1;
+	chiaki_controller_state_set_idle(&dpad_touch_state);
+	dpad_touch_value = QPair<uint16_t, uint16_t>(0,0);
+	dpad_touch_increment = connect_info.dpad_touch_increment;
+	dpad_touch_timer = new QTimer(this);
+	connect(dpad_touch_timer, &QTimer::timeout, this, &StreamSession::DpadSendFeedbackState);
+	dpad_touch_timer->setInterval(DPAD_TOUCH_UPDATE_INTERVAL_MS);
+	dpad_touch_stop_timer = new QTimer(this);
+	dpad_touch_stop_timer->setSingleShot(true);
+	connect(dpad_touch_stop_timer, &QTimer::timeout, this, [this]{
+		if(dpad_touch_id >= 0)
+		{
+			dpad_touch_timer->stop();
+			chiaki_controller_state_stop_touch(&dpad_touch_state, (uint8_t)dpad_touch_id);
+			dpad_touch_id = -1;
+			SendFeedbackState();
+		}
+	});
 	// If duid isn't empty connect with psn
 	chiaki_connect_info.holepunch_session = NULL;
 	if(!connect_info.duid.isEmpty())
@@ -301,6 +391,8 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 #if CHIAKI_GUI_ENABLE_SETSU
 	setsu_motion_device = nullptr;
 	chiaki_controller_state_set_idle(&setsu_state);
+	chiaki_accel_new_zero_set_inactive(&setsu_accel_zero, false);
+	chiaki_accel_new_zero_set_inactive(&setsu_real_accel, true);
 	setsu_ids=QMap<QPair<QString, SetsuTrackingId>, uint8_t>();
 	orient_dirty = true;
 	chiaki_orientation_tracker_init(&orient_tracker);
@@ -328,13 +420,11 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 	{
 		CHIAKI_LOGI(GetChiakiLog(), "Connected Steam Deck ... gyro online\n\n");
 		vertical_sdeck = connect_info.vertical_sdeck;
-		if(vertical_sdeck)
-		{
-			chiaki_orientation_tracker_init(&sdeck_orient_tracker);
-			sdeck_orient_dirty = true;
-		}
-		else
-			sdeck_orient_dirty = false;
+		chiaki_accel_new_zero_set_inactive(&sdeck_accel_zero, false);
+		chiaki_accel_new_zero_set_inactive(&sdeck_real_accel, true);
+		chiaki_orientation_tracker_init(&sdeck_orient_tracker);
+		sdeck_orient_dirty = true;
+
 		auto sdeck_timer = new QTimer(this);
 		connect(sdeck_timer, &QTimer::timeout, this, [this]{
 			sdeck_read(sdeck, SessionSDeckCb, this);
@@ -355,9 +445,13 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 		// Connect Steam Deck haptics with a delay to give other potential haptics time to set up
 		if(sdeck)
+		{
+			haptics_handheld++;
 			QTimer::singleShot(1100, this, &StreamSession::ConnectSdeckHaptics);
+		}
 #endif
-		rumbleHaptics = true;
+		rumble_haptics_intensity = connect_info.rumble_haptics_intensity;
+		ConnectRumbleHaptics();
 	}
 	UpdateGamepads();
 
@@ -398,8 +492,15 @@ StreamSession::~StreamSession()
 	}
 #endif
 #if CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
-	for(auto controller : controllers)
-		controller->Unref();
+	QMetaObject::invokeMethod(this, [this]() {
+		for(auto controller : controllers)
+		{
+			const uint8_t clear_effect[10] = { 0 };
+			controller->SetTriggerEffects(0x05, clear_effect, 0x05, clear_effect);
+			controller->SetRumble(0,0);
+			controller->Unref();
+		}
+	});
 #endif
 #if CHIAKI_GUI_ENABLE_SETSU
 	setsu_free(setsu);
@@ -418,6 +519,16 @@ StreamSession::~StreamSession()
 	{
 		chiaki_ffmpeg_decoder_fini(ffmpeg_decoder);
 		delete ffmpeg_decoder;
+	}
+	if(dpad_touch_stop_timer)
+	{
+		delete dpad_touch_stop_timer;
+		dpad_touch_stop_timer = nullptr;
+	}
+	if(dpad_touch_timer)
+	{
+		delete dpad_touch_timer;
+		dpad_touch_timer = nullptr;
 	}
 	if (haptics_output > 0)
 	{
@@ -440,12 +551,12 @@ StreamSession::~StreamSession()
 		free(sdeck_haptics_senderr);
 		sdeck_haptics_senderr = nullptr;
 	}
+#endif
 	if(mic_buf.buf)
 	{
 		free(mic_buf.buf);
 		mic_buf.buf = nullptr;
 	}
-#endif
 #if CHIAKI_GUI_ENABLE_SPEEX
 	if(speech_processing_enabled)
 	{
@@ -697,6 +808,97 @@ void StreamSession::HandleTouchEvent(QTouchEvent *event, qreal width, qreal heig
 	SendFeedbackState();
 }
 
+void StreamSession::HandleDpadTouchEvent(ChiakiControllerState *state, bool placeholder)
+{
+	ChiakiControllerState placeholder_touch_state;
+	if(!placeholder)
+		dpad_touch_timer->start();
+	if(state->buttons & CHIAKI_CONTROLLER_BUTTON_DPAD_LEFT)
+	{
+		state->buttons &= ~CHIAKI_CONTROLLER_BUTTON_DPAD_LEFT;
+		if(dpad_touch_id < 0)
+		{
+			dpad_touch_value = QPair<uint16_t, uint16_t>((uint16_t)(0), (uint16_t)(PS_TOUCHPAD_MAXY / 2));
+			dpad_touch_id = chiaki_controller_state_start_touch(&dpad_touch_state, dpad_touch_value.first, dpad_touch_value.second);
+			if(dpad_touch_stop_timer->isActive() && !placeholder)
+				dpad_touch_stop_timer->stop();
+			return;
+		}
+		if(dpad_touch_stop_timer->isActive() && !placeholder)
+			dpad_touch_stop_timer->stop();
+		if(dpad_touch_value.first < dpad_touch_increment)
+			dpad_touch_value.first = 0;
+		else
+			dpad_touch_value.first -= dpad_touch_increment;
+		chiaki_controller_state_set_touch_pos(&dpad_touch_state, dpad_touch_id, dpad_touch_value.first, dpad_touch_value.second);
+		return;
+	}
+	if(state->buttons & CHIAKI_CONTROLLER_BUTTON_DPAD_RIGHT)
+	{
+		state->buttons &= ~CHIAKI_CONTROLLER_BUTTON_DPAD_RIGHT;
+		// starting new touch
+		if(dpad_touch_id < 0)
+		{
+			dpad_touch_value = QPair<uint16_t, uint16_t>((uint16_t)(PS_TOUCHPAD_MAXX), (uint16_t)(PS_TOUCHPAD_MAXY / 2));
+			dpad_touch_id = chiaki_controller_state_start_touch(&dpad_touch_state, dpad_touch_value.first, dpad_touch_value.second);
+			if(dpad_touch_stop_timer->isActive() && !placeholder)
+				dpad_touch_stop_timer->stop();
+			return;
+		}
+		if(dpad_touch_stop_timer->isActive() && !placeholder)
+			dpad_touch_stop_timer->stop();
+		if(dpad_touch_value.first > (PS_TOUCHPAD_MAXX - dpad_touch_increment))
+			dpad_touch_value.first = PS_TOUCHPAD_MAXX;
+		else
+			dpad_touch_value.first += dpad_touch_increment;
+		chiaki_controller_state_set_touch_pos(&dpad_touch_state, dpad_touch_id, dpad_touch_value.first, dpad_touch_value.second);
+		return;
+	}
+	if(state->buttons & CHIAKI_CONTROLLER_BUTTON_DPAD_DOWN)
+	{
+		state->buttons &= ~CHIAKI_CONTROLLER_BUTTON_DPAD_DOWN;
+		// starting new touch
+		if(dpad_touch_id < 0)
+		{
+			dpad_touch_value = QPair<uint16_t, uint16_t>((uint16_t)(PS_TOUCHPAD_MAXX / 2), (uint16_t)(PS_TOUCHPAD_MAXY));
+			dpad_touch_id = chiaki_controller_state_start_touch(&dpad_touch_state, dpad_touch_value.first, dpad_touch_value.second);
+			if(dpad_touch_stop_timer->isActive() && !placeholder)
+				dpad_touch_stop_timer->stop();
+			return;
+		}
+		if(dpad_touch_stop_timer->isActive() && !placeholder)
+			dpad_touch_stop_timer->stop();
+		if(dpad_touch_value.second > PS_TOUCHPAD_MAXY - dpad_touch_increment)
+			dpad_touch_value.second = PS_TOUCHPAD_MAXY;
+		else
+			dpad_touch_value.second += dpad_touch_increment;
+		chiaki_controller_state_set_touch_pos(&dpad_touch_state, dpad_touch_id, dpad_touch_value.first, dpad_touch_value.second);
+		return;
+	}
+	if(state->buttons & CHIAKI_CONTROLLER_BUTTON_DPAD_UP)
+	{
+		state->buttons &= ~CHIAKI_CONTROLLER_BUTTON_DPAD_UP;
+		// starting new touch
+		if(dpad_touch_id < 0)
+		{
+			dpad_touch_value = QPair<uint16_t, uint16_t>((uint16_t)(PS_TOUCHPAD_MAXX / 2), (uint16_t)(0));
+			dpad_touch_id = chiaki_controller_state_start_touch(&dpad_touch_state, dpad_touch_value.first, dpad_touch_value.second);
+			if(dpad_touch_stop_timer->isActive() && !placeholder)
+				dpad_touch_stop_timer->stop();
+			return;
+		}
+		if(dpad_touch_stop_timer->isActive() && !placeholder)
+			dpad_touch_stop_timer->stop();
+		if(dpad_touch_value.second < dpad_touch_increment)
+			dpad_touch_value.second = 0;
+		else
+			dpad_touch_value.second -= dpad_touch_increment;
+		chiaki_controller_state_set_touch_pos(&dpad_touch_state, dpad_touch_id, dpad_touch_value.first, dpad_touch_value.second);
+		return;
+	}
+	CHIAKI_LOGW(GetChiakiLog(), "Dpad Touch event called without dpad press, ignoring...");
+}
+
 void StreamSession::UpdateGamepads()
 {
 #if CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
@@ -707,16 +909,14 @@ void StreamSession::UpdateGamepads()
 		{
 			CHIAKI_LOGI(log.GetChiakiLog(), "Controller %d disconnected", controller->GetDeviceID());
 			controllers.remove(controller_id);
-			if (controller->IsDualSense())
+			if (controller->IsDualSense() || controller->IsDualSenseEdge())
 			{
 				DisconnectHaptics();
 			}
-#if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
-			if (!controller->IsSteamDeck())
+			if (!controller->IsHandheld() && !controller->IsSteamVirtualUnmasked())
 			{
-				haptics_sdeck++;
+				haptics_handheld++;
 			}
-#endif
 			controller->Unref();
 		}
 	}
@@ -736,23 +936,99 @@ void StreamSession::UpdateGamepads()
 			connect(controller, &Controller::StateChanged, this, &StreamSession::SendFeedbackState);
 			connect(controller, &Controller::MicButtonPush, this, &StreamSession::ToggleMute);
 			controllers[controller_id] = controller;
-			if (controller->IsDualSense())
+			if(controller->IsHandheld())
 			{
-				controller->SetDualsenseMic(muted);
-				// Connect haptics audio device with a delay to give the sound system time to set up
-				QTimer::singleShot(1000, this, &StreamSession::ConnectHaptics);
-			}
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
-			if (!controller->IsSteamDeck())
-			{
-				haptics_sdeck--;
-			}
+				// let sdeck handle haptics bc sdeck works even if Steam is running whereas checking via SDL only works if Steam is not running
+				if(!sdeck)
+					haptics_handheld++;
+#else
+				haptics_handheld++;
 #endif
+			}
+			if (!controller->IsHandheld() && !controller->IsSteamVirtualUnmasked())
+			{
+				haptics_handheld--;
+			}
+			controller->ChangeLEDColor(led_color);
+			if (controller->IsDualSense() || controller->IsDualSenseEdge())
+			{
+				uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
+				uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
+				controller->SetDualSenseIntensity(trigger_intensity, rumble_intensity);
+				controller->SetDualsenseMic(muted);
+				if(this->haptics_output > 0)
+					continue;
+				// Connect haptics audio device with a delay to give the sound system time to set up
+				QTimer::singleShot(1000, this, &StreamSession::WaitHaptics);
+			}
 		}
 	}
-	
 	SendFeedbackState();
 #endif
+}
+
+void StreamSession::WaitHaptics()
+{
+	ConnectHaptics();
+	if(!(this->haptics_output > 0))
+		QTimer::singleShot(14000, this, &StreamSession::ConnectHaptics);
+}
+
+void StreamSession::DpadSendFeedbackState()
+{
+	ChiakiControllerState state;
+	chiaki_controller_state_set_idle(&state);
+
+#if CHIAKI_GUI_ENABLE_SETSU
+	// setsu is the one that potentially has gyro/accel/orient so copy that directly first
+	state = setsu_state;
+#endif
+
+	for(auto controller : controllers)
+	{
+		auto controller_state = controller->GetState();
+		chiaki_controller_state_or(&state, &state, &controller_state);
+	}
+
+#if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
+	chiaki_controller_state_or(&state, &state, &sdeck_state);
+#endif
+	chiaki_controller_state_or(&state, &state, &keyboard_state);
+	chiaki_controller_state_or(&state, &state, &touch_state);
+
+	if(input_block)
+	{
+		// Only unblock input after all buttons were released
+		if(input_block == 2 && !state.buttons)
+			input_block = 0;
+		else
+		{
+			chiaki_controller_state_set_idle(&state);
+			chiaki_controller_state_set_idle(&keyboard_state);
+		}
+	}
+	if((dpad_touch_shortcut1 || dpad_touch_shortcut2 || dpad_touch_shortcut3 || dpad_touch_shortcut4) && (!dpad_touch_shortcut1 || (state.buttons & dpad_touch_shortcut1)) && (!dpad_touch_shortcut2 || (state.buttons & dpad_touch_shortcut2)) && (!dpad_touch_shortcut3 || (state.buttons & dpad_touch_shortcut3)) && (!dpad_touch_shortcut4 || (state.buttons & dpad_touch_shortcut4)))
+	{
+		if(!dpad_regular_touch_switched)
+		{
+			dpad_regular_touch_switched = true;
+			dpad_regular = !dpad_regular;
+		}
+	}
+	else
+		dpad_regular_touch_switched = false;
+	if(dpad_touch_increment && !dpad_regular && (state.buttons & (CHIAKI_CONTROLLER_BUTTON_DPAD_DOWN | CHIAKI_CONTROLLER_BUTTON_DPAD_LEFT | CHIAKI_CONTROLLER_BUTTON_DPAD_RIGHT | CHIAKI_CONTROLLER_BUTTON_DPAD_UP)))
+	{
+		HandleDpadTouchEvent(&state, true);
+	}
+	else
+	{
+		if(dpad_touch_id >= 0 && !dpad_touch_stop_timer->isActive())
+			dpad_touch_stop_timer->start(NEW_DPAD_TOUCH_INTERVAL_MS);
+	}
+	chiaki_controller_state_or(&state, &state, &dpad_touch_state);
+	chiaki_session_set_controller_state(&session, &state);
 }
 
 void StreamSession::SendFeedbackState()
@@ -788,7 +1064,26 @@ void StreamSession::SendFeedbackState()
 			chiaki_controller_state_set_idle(&keyboard_state);
 		}
 	}
-
+	if((dpad_touch_shortcut1 || dpad_touch_shortcut2 || dpad_touch_shortcut3 || dpad_touch_shortcut4) && (!dpad_touch_shortcut1 || (state.buttons & dpad_touch_shortcut1)) && (!dpad_touch_shortcut2 || (state.buttons & dpad_touch_shortcut2)) && (!dpad_touch_shortcut3 || (state.buttons & dpad_touch_shortcut3)) && (!dpad_touch_shortcut4 || (state.buttons & dpad_touch_shortcut4)))
+	{
+		if(!dpad_regular_touch_switched)
+		{
+			dpad_regular_touch_switched = true;
+			dpad_regular = !dpad_regular;
+		}
+	}
+	else
+		dpad_regular_touch_switched = false;
+	if(dpad_touch_increment && !dpad_regular && (state.buttons & (CHIAKI_CONTROLLER_BUTTON_DPAD_DOWN | CHIAKI_CONTROLLER_BUTTON_DPAD_LEFT | CHIAKI_CONTROLLER_BUTTON_DPAD_RIGHT | CHIAKI_CONTROLLER_BUTTON_DPAD_UP)))
+	{
+		HandleDpadTouchEvent(&state);
+	}
+	else
+	{
+		if(dpad_touch_id >= 0 && !dpad_touch_stop_timer->isActive())
+			dpad_touch_stop_timer->start(NEW_DPAD_TOUCH_INTERVAL_MS);
+	}
+	chiaki_controller_state_or(&state, &state, &dpad_touch_state);
 	chiaki_session_set_controller_state(&session, &state);
 }
 
@@ -858,7 +1153,7 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 	if(speech_processing_enabled)
 	{
 		SDL_AudioCVT cvt;
-		SDL_BuildAudioCVT(&cvt, AUDIO_S16LSB, 1, 48000, AUDIO_S16LSB, 2, 48000);
+		SDL_BuildAudioCVT(&cvt, AUDIO_S16SYS, 1, 48000, AUDIO_S16SYS, 2, 48000);
 		cvt.len = mic_buf.size_bytes;
 		mic_resampler_buf = (uint8_t*) calloc(cvt.len * cvt.len_mult, sizeof(uint8_t));
 		if(!mic_resampler_buf)
@@ -868,7 +1163,7 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 		}
 
 		SDL_AudioCVT cvt2;
-		SDL_BuildAudioCVT(&cvt2, AUDIO_S16LSB, 2, 48000, AUDIO_S16LSB, 1, 48000);
+		SDL_BuildAudioCVT(&cvt2, AUDIO_S16SYS, 2, 48000, AUDIO_S16SYS, 1, 48000);
 		cvt2.len = cvt.len * cvt.len_ratio;
 		echo_resampler_buf = (uint8_t*) calloc(cvt2.len * cvt2.len_mult, sizeof(uint8_t));
 		if(!echo_resampler_buf)
@@ -940,7 +1235,7 @@ void StreamSession::ReadMic(const QByteArray &micdata)
 		if(speech_processing_enabled)
 		{
 			// change samples to stereo after processing with SPEEX
-			SDL_BuildAudioCVT(&cvt, AUDIO_S16LSB, 1, 48000, AUDIO_S16LSB, 2, 48000);
+			SDL_BuildAudioCVT(&cvt, AUDIO_S16SYS, 1, 48000, AUDIO_S16SYS, 2, 48000);
 			cvt.len = mic_buf.size_bytes;
 			cvt.buf = mic_resampler_buf;
 			if(!echo_to_cancel.isEmpty())
@@ -958,7 +1253,6 @@ void StreamSession::ReadMic(const QByteArray &micdata)
 			}
 			else
 			{
-				memcpy((uint8_t *)mic_buf.buf, (uint8_t *)mic_buf.buf, mic_buf.size_bytes);
 				speex_preprocess_run(preprocess_state, (int16_t *)mic_buf.buf);
 				memcpy((uint8_t *)mic_resampler_buf, (uint8_t *)mic_buf.buf, mic_buf.size_bytes);
 				if(SDL_ConvertAudio(&cvt) != 0)
@@ -997,7 +1291,6 @@ void StreamSession::ReadMic(const QByteArray &micdata)
 			}
 			else
 			{
-				memcpy((uint8_t *)mic_buf.buf, (uint8_t *)mic_buf.buf, mic_buf.size_bytes);
 				speex_preprocess_run(preprocess_state, (int16_t *)mic_buf.buf);
 				memcpy((uint8_t *)mic_resampler_buf, (uint8_t *)mic_buf.buf, mic_buf.size_bytes);
 				if(SDL_ConvertAudio(&cvt) != 0)
@@ -1023,6 +1316,8 @@ void StreamSession::ReadMic(const QByteArray &micdata)
 void StreamSession::InitHaptics()
 {
 	haptics_output = 0;
+	haptics_out_drain_queue = false;
+	haptics_buffer_size = 480; //10ms * number of ms delay configured
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 	sdeck_haptics_senderr = nullptr;
 	sdeck_haptics_senderl = nullptr;
@@ -1044,7 +1339,7 @@ void StreamSession::InitHaptics()
 #endif
 
 	SDL_AudioCVT cvt;
-	SDL_BuildAudioCVT(&cvt, AUDIO_S16LSB, 4, 3000, AUDIO_S16LSB, 4, 48000);
+	SDL_BuildAudioCVT(&cvt, AUDIO_S16SYS, 4, 3000, AUDIO_S16SYS, 4, 48000);
 	cvt.len = 240;  // 10 16bit stereo samples
 	haptics_resampler_buf = (uint8_t*) calloc(cvt.len * cvt.len_mult, sizeof(uint8_t));
 	if(!haptics_resampler_buf)
@@ -1060,6 +1355,51 @@ void StreamSession::DisconnectHaptics()
 	}
 }
 
+void StreamSession::ConnectRumbleHaptics()
+{
+	if(rumble_haptics_connected)
+		return;
+	rumble_haptics = {};
+	rumble_haptics.reserve(20);
+	connect(this, &StreamSession::RumbleHapticPushed, this, &StreamSession::QueueRumbleHaptics);
+	auto rumble_haptics_interval = RUMBLE_HAPTICS_PACKETS_PER_RUMBLE * 10;
+	auto rumble_haptics_timer = new QTimer(this);
+	connect(rumble_haptics_timer, &QTimer::timeout, this, [this]{
+		bool changed = false;
+		uint32_t strength = 0;
+		for(size_t i = 0; i < RUMBLE_HAPTICS_PACKETS_PER_RUMBLE; i++)
+		{
+			if(!rumble_haptics.isEmpty())
+				strength += rumble_haptics.dequeue();
+		}
+		strength /= RUMBLE_HAPTICS_PACKETS_PER_RUMBLE;
+		QMetaObject::invokeMethod(this, [this, strength]() {
+			for(auto controller : controllers)
+			{
+#if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
+				if(haptics_handheld < 1 && (controller->IsHandheld() || (sdeck && controller->IsSteamVirtualUnmasked())))
+#else
+				if(haptics_handheld < 1 && controller->IsHandheld())
+#endif
+					continue;
+
+				if(strength > 0 || rumble_haptics_on)
+					controller->SetHapticRumble(strength, strength);
+			}
+		});
+		rumble_haptics_on = strength > 0 ? true : false;
+	});
+	rumble_haptics_timer->start(rumble_haptics_interval);
+	rumble_haptics_connected = true;
+}
+
+void StreamSession::QueueRumbleHaptics(uint16_t strength)
+{
+	if(!rumble_haptics_connected)
+		return;
+	rumble_haptics.enqueue(strength);
+}
+
 void StreamSession::ConnectHaptics()
 {
 	if (this->haptics_output > 0)
@@ -1073,15 +1413,14 @@ void StreamSession::ConnectHaptics()
 		return;
 	}
 #ifdef Q_OS_MACOS
-	// Haptics don't work on MacOS with coreaudio
-	return;
+	CHIAKI_LOGW(this->log.GetChiakiLog(), "If haptics aren't working, please configure your DualSense audio device as quadrophonic in Applications/Utitilities/Audio Midi Setup on your Mac");
 #endif
 	SDL_AudioSpec want, have;
 	SDL_zero(want);
 	want.freq = 48000;
-	want.format = AUDIO_S16LSB;
+	want.format = AUDIO_S16SYS;
 	want.channels = 4;
-	want.samples = 480; // 10ms buffer
+	want.samples = haptics_buffer_size;
 	want.callback = NULL;
 
 	const char *device_name = nullptr;
@@ -1109,7 +1448,6 @@ void StreamSession::ConnectHaptics()
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 void StreamSession::ConnectSdeckHaptics()
 {
-	haptics_sdeck++;
 	if(!enable_steamdeck_haptics)
 		return;
 	sdeck_last_haptic = chiaki_time_now_monotonic_ms();
@@ -1152,10 +1490,7 @@ void StreamSession::ConnectSdeckHaptics()
 			{
 				uint64_t next_timestamp = sdeck_hapticl.head().timestamp;
 				if(next_timestamp > (current_tick + 10))
-				{
 					memset(sdeck_haptics_senderl + 30 * i, 0, 30);
-					continue;
-				}
 				else
 				{
 					haptic_packetl = sdeck_hapticl.dequeue();
@@ -1170,10 +1505,7 @@ void StreamSession::ConnectSdeckHaptics()
 			{
 				uint64_t next_timestamp = sdeck_hapticr.head().timestamp;
 				if(next_timestamp > (current_tick + 10))
-				{
 					memset(sdeck_haptics_senderr + 30 * i, 0, 30);
-					continue;
-				}
 				else
 				{
 					haptic_packetr = sdeck_hapticr.dequeue();
@@ -1212,13 +1544,16 @@ void StreamSession::ConnectSdeckHaptics()
 }
 #endif
 
-void StreamSession::PushAudioFrame(int16_t *buf, size_t samples_count)
+void StreamSession::PushAudioFrame(int16_t *og_buf, size_t samples_count)
 {
-	if(!audio_out)
+	if(!audio_out || !audio_volume)
 		return;
 
-	// qDebug() << "Audio queue" << (SDL_GetQueuedAudioSize(audio_out) / audio_out_sample_size / samples_count) * 10 << "ms";
+	// 2 Channels per sample
+	int16_t buf[samples_count * 2];
+	SDL_memset(buf, 0, sizeof(buf));
 
+	// qDebug() << "Audio queue" << (SDL_GetQueuedAudioSize(audio_out) / audio_out_sample_size / samples_count) * 10 << "ms";
 	// Start draining queue when the latency gets too high
 	if(SDL_GetQueuedAudioSize(audio_out) > 3 * audio_buffer_size)
 		audio_out_drain_queue = true;
@@ -1230,13 +1565,16 @@ void StreamSession::PushAudioFrame(int16_t *buf, size_t samples_count)
 			return;
 		audio_out_drain_queue = false;
 	}
-
+	if(audio_volume < SDL_MIX_MAXVOLUME)
+		SDL_MixAudioFormat((uint8_t *)buf, (uint8_t *)og_buf, AUDIO_S16SYS, sizeof(buf), audio_volume);
+	else
+		memcpy(buf, og_buf, sizeof(buf));
 #if CHIAKI_GUI_ENABLE_SPEEX
 	// change samples to mono for processing with SPEEX
 	if(echo_resampler_buf && speech_processing_enabled && !muted)
 	{
 		SDL_AudioCVT cvt;
-		SDL_BuildAudioCVT(&cvt, AUDIO_S16LSB, 2, 48000, AUDIO_S16LSB, 1, 48000);
+		SDL_BuildAudioCVT(&cvt, AUDIO_S16SYS, 2, 48000, AUDIO_S16SYS, 1, 48000);
 		cvt.len = mic_buf.size_bytes * 2;
 		cvt.buf = echo_resampler_buf;
 		memcpy(echo_resampler_buf, buf, mic_buf.size_bytes * 2);
@@ -1275,11 +1613,14 @@ void StreamSession::SetMicAuthorization(Authorization authorization)
 void StreamSession::PushHapticsFrame(uint8_t *buf, size_t buf_size)
 {
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
-	if(sdeck && haptics_sdeck > 0 && enable_steamdeck_haptics)
+	if(sdeck && haptics_handheld > 0 && enable_steamdeck_haptics)
 	{
+		if(ps5_rumble_intensity < 0 || haptic_override < 0.01)
+			return;
+		float intensity = haptic_override * rumble_multiplier;
 		if(buf_size != 120)
 		{
-			CHIAKI_LOGE(log.GetChiakiLog(), "Haptic audio of incompatible size: %u", buf_size);
+			CHIAKI_LOGE(log.GetChiakiLog(), "Haptic audio of incompatible size: %zu", buf_size);
 			return;
 		}
 		int16_t amplitudel = 0, amplituder = 0;
@@ -1293,19 +1634,24 @@ void StreamSession::PushHapticsFrame(uint8_t *buf, size_t buf_size)
 		{
 			size_t cur = i * sample_size;
 			memcpy(&amplitudel, buf + cur, sizeof(int16_t));
+			int32_t adjustedl = (int32_t)amplitudel * intensity;
+			adjustedl = (adjustedl > INT16_MAX) ? INT16_MAX : adjustedl;
+			amplitudel = (adjustedl < INT16_MIN) ? INT16_MIN : adjustedl;
 			packetl.haptic_packet[i] = amplitudel;
 			memcpy(&amplituder, buf + cur + sizeof(int16_t), sizeof(int16_t));
+			int32_t adjustedr = (int32_t)amplituder * intensity;
+			adjustedr = (adjustedr > INT16_MAX) ? INT16_MAX : adjustedr;
+			amplituder = (adjustedr < INT16_MIN) ? INT16_MIN : adjustedr;
 			packetr.haptic_packet[i] = amplituder;
 		}
 		emit SdeckHapticPushed(packetl, packetr);
 		return;
 	}
 #endif
-	if(rumbleHaptics && haptics_output == 0)
+	if((rumble_haptics_intensity != RumbleHapticsIntensity::Off) && haptics_output == 0)
 	{
-
 		int16_t amplitudel = 0, amplituder = 0;
-		int32_t suml = 0, sumr = 0;
+		uint32_t suml = 0, sumr = 0;
 		const size_t sample_size = 2 * sizeof(int16_t); // stereo samples
 
 		size_t buf_count = buf_size / sample_size;
@@ -1314,45 +1660,121 @@ void StreamSession::PushHapticsFrame(uint8_t *buf, size_t buf_size)
 
 			memcpy(&amplitudel, buf + cur, sizeof(int16_t));
 			memcpy(&amplituder, buf + cur + sizeof(int16_t), sizeof(int16_t));
-			suml += amplitudel;
-			sumr += amplituder;
+			suml += static_cast<uint32_t>(qFabs(amplitudel)) * 2;
+			sumr += static_cast<uint32_t>(qFabs(amplituder)) * 2;
 		}
-		uint16_t left = 0, right = 0;
-		left = suml / buf_count;
-		right = sumr / buf_count;
-		QMetaObject::invokeMethod(this, [this, left, right]() {
-			for(auto controller : controllers)
-			{
+		uint32_t temp_left = (suml / buf_count);
+		uint32_t temp_right = (sumr / buf_count);
+		uint16_t original_strength = (temp_left > temp_right) ? temp_left : temp_right;
+		uint16_t left = 0;
+		uint16_t right = 0;
+		temp_left = (temp_left > HAPTIC_RUMBLE_MIN_STRENGTH) ? temp_left : 0;
+		temp_right = (temp_right > HAPTIC_RUMBLE_MIN_STRENGTH) ? temp_right : 0;
+		if(temp_left == 0 && temp_right == 0)
+			return;
+		switch(rumble_haptics_intensity)
+		{
+			case RumbleHapticsIntensity::VeryWeak:
+				left = temp_left / 5;
+				right = temp_right / 5;
+				break;
+			case RumbleHapticsIntensity::Weak:
+				left = temp_left / 2;
+				right = temp_right / 2;
+				break;
+			case RumbleHapticsIntensity::Normal:
+				left = temp_left;
+				right = temp_right;
+				break;
+			case RumbleHapticsIntensity::Strong:
+				temp_left *= 2;
+				temp_right *= 2;
+				left = (temp_left > UINT16_MAX) ? UINT16_MAX : temp_left;
+				right = (temp_right > UINT16_MAX) ? UINT16_MAX : temp_right;
+				break;
+			case RumbleHapticsIntensity::VeryStrong:
+				temp_left *= 5;
+				temp_right *= 5;
+				left = (temp_left > UINT16_MAX) ? UINT16_MAX : temp_left;
+				right = (temp_right > UINT16_MAX) ? UINT16_MAX : temp_right;
+				break;
+			default:
+				left = temp_left;
+				right = temp_right;
+				break;
+		}
+		// Set minimum rumble value if above rumble min for controllers that shift up to 9 bits when rumbling
+		left = ((left > 0 && left < (1 << 9)) ? (1 << 9) : left);
+		right = ((right > 0 && right < (1 << 9)) ? (1 << 9) : right);
+		uint16_t strength = (left > right) ? left : right;
+		bool send_rumble_haptics = false;
+		for(auto controller : controllers)
+		{
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
-				if(haptics_sdeck < 1 && controller->IsSteamDeck())
-					continue;
+			if(haptics_handheld < 1 && (controller->IsHandheld() || (sdeck && controller->IsSteamVirtualUnmasked())))
+#else
+			if(haptics_handheld < 1 && controller->IsHandheld())
 #endif
-				if(left > right)
-					controller->SetHapticRumble(left, left, 10);
-				else
-					controller->SetHapticRumble(right, right, 10);
-			}
-		});
+				continue;
+			send_rumble_haptics = true;
+		}
+		if(send_rumble_haptics)
+			emit RumbleHapticPushed(strength);
 		return;
 	}
 	if(haptics_output == 0)
 		return;
+	if(ps5_rumble_intensity < 0)
+		return;
 	SDL_AudioCVT cvt;
 	// Haptics samples are coming in at 3KHZ, but the DualSense expects 48KHZ
-	SDL_BuildAudioCVT(&cvt, AUDIO_S16LSB, 4, 3000, AUDIO_S16LSB, 4, 48000);
+	SDL_BuildAudioCVT(&cvt, AUDIO_S16SYS, 4, 3000, AUDIO_S16SYS, 4, 48000);
 	cvt.len = buf_size * 2;
 	cvt.buf = haptics_resampler_buf;
 	// Remix to 4 channels
-	for (int i=0; i < buf_size; i+=4)
+	if(haptic_override > 0.99 && haptic_override < 1.01)
 	{
-		SDL_memset(haptics_resampler_buf + i * 2, 0, 4);
-		SDL_memcpy(haptics_resampler_buf + (i * 2) + 4, buf + i, 4);
+		for (int i=0; i < buf_size; i+=4)
+		{
+			SDL_memset(haptics_resampler_buf + i * 2, 0, 4);
+			SDL_memcpy(haptics_resampler_buf + (i * 2) + 4, buf + i, 4);
+		}
+	}
+	else
+	{
+		for (int i=0; i < buf_size; i+=4)
+		{
+			SDL_memset(haptics_resampler_buf + i * 2, 0, 4);
+			SDL_memcpy(haptics_resampler_buf + (i * 2) + 4, buf + i, 4);
+			int16_t amplitudel = (*reinterpret_cast<int16_t *>(haptics_resampler_buf + (i * 2) + 4));
+			int32_t adjustedl = static_cast<int32_t>(amplitudel) * haptic_override;
+			adjustedl = (adjustedl > INT16_MAX) ? INT16_MAX : adjustedl;
+			amplitudel = (adjustedl < INT16_MIN) ? INT16_MIN : adjustedl;
+			(*reinterpret_cast<int16_t *>(haptics_resampler_buf + (i * 2) + 4)) = amplitudel;
+			int16_t amplituder = (*reinterpret_cast<int16_t *>(haptics_resampler_buf + (i * 2) + 6));
+			int32_t adjustedr = static_cast<int32_t>(amplituder) * haptic_override;
+			adjustedr = (adjustedr > INT16_MAX) ? INT16_MAX : adjustedr;
+			amplituder = (adjustedr < INT16_MIN) ? INT16_MIN : adjustedr;
+			(*reinterpret_cast<int16_t *>(haptics_resampler_buf + (i * 2) + 6)) = amplituder;
+		}
 	}
 	// Resample to 48kHZ
 	if (SDL_ConvertAudio(&cvt) != 0)
 	{
 		CHIAKI_LOGE(log.GetChiakiLog(), "Failed to resample haptics audio: %s", SDL_GetError());
 		return;
+	}
+
+	// Start draining queue when the latency gets too high
+	if(SDL_GetQueuedAudioSize(haptics_output) > 3 * haptics_buffer_size)
+		haptics_out_drain_queue = true;
+
+	if(haptics_out_drain_queue)
+	{
+		// Stop when the queue is smaller than configured buffer size
+		if(SDL_GetQueuedAudioSize(haptics_output) >= haptics_buffer_size)
+			return;
+		haptics_out_drain_queue = false;
 	}
 
 	if (SDL_QueueAudio(haptics_output, cvt.buf, cvt.len_cvt) < 0)
@@ -1380,7 +1802,7 @@ void StreamSession::Event(ChiakiEvent *event)
 			emit ConnectedChanged();
 			break;
 		case CHIAKI_EVENT_QUIT:
-			if(!connected && !holepunch_session && chiaki_quit_reason_is_error(event->quit.reason) && connect_timer.elapsed() < 10 * 1000)
+			if(!connected && !holepunch_session && chiaki_quit_reason_is_error(event->quit.reason) && connect_timer.elapsed() < SESSION_RETRY_SECONDS * 1000)
 			{
 				QTimer::singleShot(1000, this, &StreamSession::Start);
 				return;
@@ -1388,6 +1810,9 @@ void StreamSession::Event(ChiakiEvent *event)
 			connected = false;
 			emit ConnectedChanged();
 			emit SessionQuit(event->quit.reason, event->quit.reason_str ? QString::fromUtf8(event->quit.reason_str) : QString());
+			break;
+		case CHIAKI_EVENT_REGIST:
+			emit AutoRegistSucceeded(event->host);
 			break;
 		case CHIAKI_EVENT_LOGIN_PIN_REQUEST:
 			emit LoginPINRequested(event->login_pin_request.pin_incorrect);
@@ -1399,15 +1824,122 @@ void StreamSession::Event(ChiakiEvent *event)
 			emit NicknameReceived(event->server_nickname);
 			break;
 		case CHIAKI_EVENT_RUMBLE: {
+			if(ps5_rumble_intensity < 0)
+				return;
 			uint8_t left = event->rumble.left;
 			uint8_t right = event->rumble.right;
-			QMetaObject::invokeMethod(this, [this, left, right]() {
+			uint8_t left_adj = left * rumble_multiplier;
+			uint8_t right_adj = right * rumble_multiplier;
+			QMetaObject::invokeMethod(this, [this, left, right, left_adj, right_adj]() {
 				for(auto controller : controllers)
-					controller->SetRumble(left, right);
+				{
+					if(controller->IsDualSense() || controller->IsDualSenseEdge())
+						controller->SetRumble(left, right);
+					else
+						controller->SetRumble(left_adj, right_adj);
+				}
+			});
+			break;
+		}
+		case CHIAKI_EVENT_LED_COLOR: {
+			memcpy(led_color, event->led_state, 3);
+			uint8_t led_state[3];
+			memcpy(led_state, led_color, 3);
+			QMetaObject::invokeMethod(this, [this, led_state]() {
+				for(auto controller : controllers)
+					controller->ChangeLEDColor(led_state);
+			});
+			break;
+		}
+		case CHIAKI_EVENT_MOTION_RESET: {
+			QMetaObject::invokeMethod(this, [this]() {
+				for(auto controller : controllers)
+					controller->resetMotionControls();
+			});
+#if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
+			if(sdeck)
+			{
+				chiaki_accel_new_zero_set_active(&sdeck_accel_zero, sdeck_real_accel.accel_x, sdeck_real_accel.accel_y, sdeck_real_accel.accel_z, false);
+				chiaki_orientation_tracker_init(&sdeck_orient_tracker);
+				chiaki_orientation_tracker_update(
+					&sdeck_orient_tracker, sdeck_state.gyro_x, sdeck_state.gyro_y, sdeck_state.gyro_z,
+					sdeck_real_accel.accel_x, sdeck_real_accel.accel_y, sdeck_real_accel.accel_z, &sdeck_accel_zero, false, chiaki_time_now_monotonic_us());
+				chiaki_orientation_tracker_apply_to_controller_state(&sdeck_orient_tracker, &sdeck_state);
+			}
+#endif
+#if CHIAKI_GUI_ENABLE_SETSU
+			chiaki_accel_new_zero_set_active(&setsu_accel_zero, setsu_real_accel.accel_x, setsu_real_accel.accel_y, setsu_real_accel.accel_z, false);
+			chiaki_orientation_tracker_init(&orient_tracker);
+			chiaki_orientation_tracker_update(
+				&orient_tracker, setsu_state.gyro_x, setsu_state.gyro_y, setsu_state.gyro_z,
+				setsu_real_accel.accel_x, setsu_real_accel.accel_y, setsu_real_accel.accel_z, &setsu_accel_zero, false, chiaki_time_now_monotonic_us());
+			chiaki_orientation_tracker_apply_to_controller_state(&orient_tracker, &setsu_state);
+#endif
+			break;
+		}
+		case CHIAKI_EVENT_HAPTIC_INTENSITY: {
+			switch(event->intensity)
+			{
+				case Off: {
+					ps5_rumble_intensity = -1;
+					rumble_multiplier = 0;
+					break;
+				}
+				case Strong: {
+					ps5_rumble_intensity = 0x00;
+					rumble_multiplier = 1.0;
+					break;
+				}
+				case Weak: {
+					ps5_rumble_intensity = 0x03;
+					rumble_multiplier = 0.33;
+					break;
+				}
+				case Medium: {
+					ps5_rumble_intensity = 0x02;
+					rumble_multiplier = 0.5;
+					break;
+				}
+			}
+			uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
+			uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
+			QMetaObject::invokeMethod(this, [this, trigger_intensity, rumble_intensity]() {
+				for(auto controller : controllers)
+					controller->SetDualSenseIntensity(trigger_intensity, rumble_intensity);
+			});
+			break;
+		}
+		case CHIAKI_EVENT_TRIGGER_INTENSITY: {
+			switch(event->intensity)
+			{
+				case Off: {
+					ps5_trigger_intensity = -1;
+					break;
+				}
+				case Strong: {
+					ps5_trigger_intensity = 0x00;
+					break;
+				}
+				case Weak: {
+					ps5_trigger_intensity = 0x90;
+					break;
+				}
+				case Medium: {
+					ps5_trigger_intensity = 0x60;
+					break;
+				}
+			}
+			uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
+			uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
+			QMetaObject::invokeMethod(this, [this, trigger_intensity, rumble_intensity]() {
+				for(auto controller : controllers)
+					controller->SetDualSenseIntensity(trigger_intensity, rumble_intensity);
 			});
 			break;
 		}
 		case CHIAKI_EVENT_TRIGGER_EFFECTS: {
+			if(ps5_trigger_intensity < 0)
+				return;
 			uint8_t type_left = event->trigger_effects.type_left;
 			uint8_t data_left[10];
 			memcpy(data_left, event->trigger_effects.left, 10);
@@ -1439,27 +1971,24 @@ void StreamSession::HandleSDeckEvent(SDeckEvent *event)
 		case SDECK_EVENT_MOTION:
 			if(!vertical_sdeck)
 			{
-				sdeck_state.gyro_x = event->motion.gyro_x;
-				sdeck_state.gyro_y = event->motion.gyro_y;
-				sdeck_state.gyro_z = event->motion.gyro_z;
-				sdeck_state.accel_x = event->motion.accel_x;
-				sdeck_state.accel_y = event->motion.accel_y;
-				sdeck_state.accel_z = event->motion.accel_z;
-				sdeck_state.orient_w = event->motion.orient_w;
-				sdeck_state.orient_x = event->motion.orient_x;
-				sdeck_state.orient_y = event->motion.orient_y;
-				sdeck_state.orient_z = event->motion.orient_z;
-				SendFeedbackState();
+				chiaki_accel_new_zero_set_active(&sdeck_real_accel, event->motion.accel_x,
+				event->motion.accel_y, event->motion.accel_z, true);
+				chiaki_orientation_tracker_update(&sdeck_orient_tracker,
+					event->motion.gyro_x, event->motion.gyro_y, event->motion.gyro_z,
+					event->motion.accel_x, event->motion.accel_y, event->motion.accel_z,
+					&sdeck_accel_zero, false, chiaki_time_now_monotonic_us());
 			}
 			else // swap y with z axis to use roll instead of yaw
 			{
 				// use calculated orient
+				chiaki_accel_new_zero_set_active(&sdeck_real_accel, event->motion.accel_x,
+				-event->motion.accel_z, event->motion.accel_y, true);
 				chiaki_orientation_tracker_update(&sdeck_orient_tracker,
 					event->motion.gyro_x, -event->motion.gyro_z, event->motion.gyro_y,
 					event->motion.accel_x, -event->motion.accel_z, event->motion.accel_y,
-					chiaki_time_now_monotonic_us());
-				sdeck_orient_dirty = true;
+					&sdeck_accel_zero, false, chiaki_time_now_monotonic_us());
 			}
+			sdeck_orient_dirty = true;
 			break;
 		case SDECK_EVENT_GYRO_ENABLE:
 			if(event->enabled)
@@ -1574,10 +2103,12 @@ void StreamSession::HandleSetsuEvent(SetsuEvent *event)
 			setsu_state.buttons &= ~CHIAKI_CONTROLLER_BUTTON_TOUCHPAD;
 			break;
 		case SETSU_EVENT_MOTION:
+			chiaki_accel_new_zero_set_active(&sdeck_real_accel, event->motion.accel_x,
+			event->motion.accel_y, event->motion.accel_z, true);
 			chiaki_orientation_tracker_update(&orient_tracker,
 					event->motion.gyro_x, event->motion.gyro_y, event->motion.gyro_z,
 					event->motion.accel_x, event->motion.accel_y, event->motion.accel_z,
-					event->motion.timestamp);
+					&setsu_accel_zero, false, event->motion.timestamp);
 			orient_dirty = true;
 			break;
 	}
@@ -1593,14 +2124,7 @@ ChiakiErrorCode StreamSession::InitiatePsnConnection(QString psn_token)
 		CHIAKI_LOGE(log, "!! Failed to initialize session");
 		return CHIAKI_ERR_MEMORY;
 	}
-	ChiakiErrorCode err = chiaki_holepunch_session_create(holepunch_session);
-	if (err != CHIAKI_ERR_SUCCESS)
-	{
-		CHIAKI_LOGE(log, "!! Failed to create session");
-		return err;
-	}
-	CHIAKI_LOGI(log, ">> Created session");
-	return err;
+	return CHIAKI_ERR_SUCCESS;
 }
 
 ChiakiErrorCode StreamSession::ConnectPsnConnection(QString duid, bool ps5)
@@ -1620,7 +2144,27 @@ ChiakiErrorCode StreamSession::ConnectPsnConnection(QString duid, bool ps5)
 		return CHIAKI_ERR_INVALID_DATA;
 	}
 	ChiakiHolepunchConsoleType console_type = ps5 ? CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5 : CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS4;
-	ChiakiErrorCode err = chiaki_holepunch_session_start(holepunch_session, duid_bytes, console_type);
+	ChiakiErrorCode err = chiaki_holepunch_upnp_discover(holepunch_session);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		CHIAKI_LOGE(log, "!! Failed to run upnp discover");
+		return err;
+	}
+	err = chiaki_holepunch_session_create(holepunch_session);
+	if (err != CHIAKI_ERR_SUCCESS)
+	{
+		CHIAKI_LOGE(log, "!! Failed to create session");
+		return err;
+	}
+	CHIAKI_LOGI(log, ">> Created session");
+	err = holepunch_session_create_offer(holepunch_session);
+	if (err != CHIAKI_ERR_SUCCESS)
+	{
+		CHIAKI_LOGE(log, "!! Failed to create offer msg for ctrl connection");
+		return err;
+	}
+	CHIAKI_LOGI(log, ">> Created offer msg for ctrl connection");
+	err = chiaki_holepunch_session_start(holepunch_session, duid_bytes, console_type);
 	if (err != CHIAKI_ERR_SUCCESS)
 	{
 		CHIAKI_LOGE(log, "!! Failed to start session");

@@ -18,8 +18,10 @@ typedef struct chiaki_discovery_service_options_t
 	uint64_t host_drop_pings;
 	uint64_t ping_ms;
 	uint64_t ping_initial_ms;
-	struct sockaddr_in6 *send_addr;
+	struct sockaddr_storage *send_addr;
 	size_t send_addr_size;
+	struct sockaddr_storage *broadcast_addrs;
+	size_t broadcast_num;
 	char *send_host;
 	ChiakiDiscoveryServiceCb cb;
 	void *cb_user;

@@ -2,13 +2,14 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 
-import org.streetpea.chiaki4deck
+import org.streetpea.chiaking
 
 Rectangle {
     id: view
     property bool allowClose: false
     property bool cancelling: false
     property bool textVisible: true
+    property bool registOnly: false
     property list<Item> restoreFocusItems
     color: "black"
 
@@ -27,17 +28,16 @@ Rectangle {
         Chiaki.window.grabInput();
         restoreFocusItems.push(Window.window.activeFocusItem);
         if (item)
-            item.forceActiveFocus();
+            item.forceActiveFocus(Qt.TabFocusReason);
     }
 
     function releaseInput() {
         Chiaki.window.releaseInput();
         let item = restoreFocusItems.pop();
         if (item && item.visible)
-            item.forceActiveFocus();
+            item.forceActiveFocus(Qt.TabFocusReason);
     }
 
-    Keys.onReturnPressed: view.stop()
     Keys.onEscapePressed: view.stop()
 
     Shortcut {
@@ -48,6 +48,7 @@ Rectangle {
     MouseArea {
         anchors.fill: parent
         enabled: view.allowClose
+        acceptedButtons: Qt.RightButton
         onClicked: view.stop()
     }
 
@@ -73,6 +74,21 @@ Rectangle {
             anchors.centerIn: parent
             width: 70
             height: width
+        }
+
+        Label {
+            id: closeMessageLabel
+            anchors {
+                top: spinner.bottom
+                horizontalCenter: spinner.horizontalCenter
+                topMargin: 30
+            }
+            opacity: (textVisible && !cancelling) ? 1.0: 0.0
+            visible: opacity
+            text: {
+                var typeString = registOnly ? qsTr("automatic registration") : qsTr("remote connection via PSN")
+                qsTr("Press %1 to cancel %2").arg(Chiaki.controllers.length ? (root.controllerButton("circle").includes("deck") ? "B" : "Circle") : "escape or right-click").arg(typeString)
+            }
         }
 
         Label {
@@ -149,6 +165,10 @@ Rectangle {
             id: pinField
             implicitWidth: 200
             validator: RegularExpressionValidator { regularExpression: /[0-9]{4}/ }
+            Keys.onReturnPressed: {
+                if(sessionPinDialog.standardButton(Dialog.Ok).enabled)
+                    sessionPinDialog.standardButton(Dialog.Ok).clicked()
+            }
         }
     }
 
@@ -160,11 +180,18 @@ Rectangle {
             switch(Chiaki.connectState)
             {
                 case Chiaki.PsnConnectState.LinkingConsole:
-                    infoLabel.text = qsTr("Linking Chiaki4deck with PlayStation console ...")
+                    infoLabel.text = registOnly ? qsTr("Registering PlayStation console with chiaki-ng ...") : qsTr("Linking chiaki-ng with PlayStation console ...")
                     view.allowClose = false
                     break
+                case Chiaki.PsnConnectState.RegisteringConsole:
+                    view.registOnly = true;
+                    break
+                case Chiaki.PsnConnectState.RegistrationFinished:
+                    infoLabel.text = qsTr("Successfully registered console")
+                    failTimer.restart()
+                    break
                 case Chiaki.PsnConnectState.DataConnectionStart:
-                    infoLabel.text = qsTr("Console Linked ... Establising data connection with console over PSN ...")
+                    infoLabel.text = qsTr("Console Linked ... Establishing data connection with console over PSN ...")
                     view.allowClose = true
                     break
                 case Chiaki.PsnConnectState.DataConnectionFinished:
@@ -196,7 +223,7 @@ Rectangle {
             if (!Chiaki.session) {
                 if (errorTitleLabel.text)
                     failTimer.start();
-                else
+                else if(!failTimer.running)
                     root.showMainView();
             }
         }

@@ -60,13 +60,19 @@
             sudo pacman-key --populate archlinux
             ```
 
-        4. Install dependencies
+        4. Populate keyring with Holo keys
+
+            ``` bash
+            sudo pacman-key --populate holo
+            ```
+
+        5. Install dependencies
 
             ``` bash
             sudo pacman -Syy && sudo pacman -S flatpak-builder
             ```
 
-        5. Re-enable read-only mode
+        6. Re-enable read-only mode
 
             ``` bash
             sudo steamos-readonly enable
@@ -85,51 +91,65 @@
 1. Install the necessary [flatpak runtime](https://docs.flatpak.org/en/latest/basic-concepts.html#runtimes){target="_blank" rel="noopener"}, associated [sdk](https://docs.flatpak.org/en/latest/building-introduction.html#software-development-kits-sdks){target="_blank" rel="noopener"}, and base app.
 
     ```bash
-    flatpak install -y flathub org.kde.Platform//6.6 flathub org.kde.Sdk//6.6 flathub io.qt.qtwebengine.BaseApp/x86_64/6.6
+    flatpak install -y flathub org.kde.Platform//6.8 flathub org.kde.Sdk//6.8
     ```
 
 2. Create a directory for your build files and switch into it
 
     ```bash
-    mkdir -p ~/build-chiaki4deck-flatpak && cd ~/build-chiaki4deck-flatpak
+    mkdir -p ~/build-chiaki-ng-flatpak && cd ~/build-chiaki-ng-flatpak
     ```
 
-3. Get the [flatpak manifest file](https://docs.flatpak.org/en/latest/manifests.html){target="_blank" rel="noopener"} for `chiaki4deck`
+3. Get the [flatpak manifest file](https://docs.flatpak.org/en/latest/manifests.html){target="_blank" rel="noopener"} for `chiaki-ng`
 
     ```
-    curl -LO https://raw.githubusercontent.com/streetpea/chiaki4deck/main/scripts/flatpak/chiaki4deck.yaml
+    curl -Lo chiaki-ng.yaml https://raw.githubusercontent.com/streetpea/chiaki-ng/main/scripts/flatpak/chiaki4deck.yaml
     ```
+
+4. Get the patch files
+
+    1. 0001-Vulkan-Don-t-try-to-reuse-old-swapchain.patch
+
+        ```
+        curl -LO https://raw.githubusercontent.com/streetpea/chiaki-ng/main/scripts/flatpak/0001-Vulkan-Don-t-try-to-reuse-old-swapchain.patch
+        ```
+
+    2. 0001-vulkan-ignore-frames-without-hw-context.patch
+
+        ```
+        curl -LO https://raw.githubusercontent.com/streetpea/chiaki-ng/main/scripts/flatpak/0001-vulkan-ignore-frames-without-hw-context.patch
+        ```
 
 ### Create `gpg` Key for Signing your Builds and Repositories
 
 1. Create the [gpg](https://gnupg.org/gph/en/manual/c14.html){target="_blank" rel="noopener"} key pair
 
     ``` bash
-    gpg --quick-gen-key chiaki4deck-diy
+    gpg --quick-gen-key chiaki-ng-diy
     ```
 
 2. Export public key (private key stays on your machine in your gpg directory) [~/.gnupg by default].
 
     ``` bash
-    gpg --export chiaki4deck-diy > chiaki4deck-diy.gpg
+    gpg --export chiaki-ng-diy > chiaki-ng-diy.gpg
     ```
 
 ### Create Flatpak
 
-4. Build the flatpak for `chiaki4deck`
+4. Build the flatpak for `chiaki-ng`
 
     ``` bash
-    flatpak-builder --repo=chiaki4deck-diy --force-clean build chiaki4deck.yaml --gpg-sign chiaki4deck-diy
+    flatpak-builder --repo=chiaki-ng-diy --force-clean build chiaki-ng.yaml --gpg-sign chiaki-ng-diy
     ```
 
     !!! Question "How long :clock: will this take?"
 
-        This build process is compiling first the dependencies and then Chiaki itself with the updates included in `chiaki4deck`. This will take a long while (read: 15+ minutes depending on the resources of the build system itself) the first time it runs. However, since flatpak caches builds, if you make changes to just the `chiaki4deck` repo code and then run a new build, it will import the dependencies from cache and only start building from scratch when it detects the first change in the stack. This results in subsequent builds going much faster than the first build you make.
+        This build process is compiling first the dependencies and then Chiaki itself with the updates included in `chiaki-ng`. This will take a long while (read: 15+ minutes depending on the resources of the build system itself) the first time it runs. However, since flatpak caches builds, if you make changes to just the `chiaki-ng` repo code and then run a new build, it will import the dependencies from cache and only start building from scratch when it detects the first change in the stack. This results in subsequent builds going much faster than the first build you make.
 
 5. Update static deltas (makes upgrading require less downloaded data for end-users)
 
     ``` bash
-    flatpak build-update-repo chiaki4deck-diy --generate-static-deltas --gpg-sign=chiaki4deck-diy
+    flatpak build-update-repo chiaki-ng-diy --generate-static-deltas --gpg-sign=chiaki-ng-diy
     ```
 
 
@@ -138,12 +158,12 @@
 1. Add the repository you built as a local remote repository
 
     ``` bash
-    flatpak --user remote-add --gpg-import chiaki4deck-diy.gpg chiaki4deck-diy ~/build-chiaki4deck-flatpak/chiaki4deck-diy
+    flatpak --user remote-add --gpg-import chiaki-ng-diy.gpg chiaki-ng-diy ~/build-chiaki-ng-flatpak/chiaki-ng-diy
     ```
 
-2. Install your self-built `chiaki4deck` flatpak from your new remote
+2. Install your self-built `chiaki-ng` flatpak from your new remote
 
     ``` bash
-    flatpak --user install chiaki4deck-diy io.github.streetpea.Chiaki4deck
+    flatpak --user install chiaki-ng-diy io.github.streetpea.Chiaki4deck
     ```
 

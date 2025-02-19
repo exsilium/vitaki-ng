@@ -2,7 +2,15 @@
 
 set -xe
 
-export PATH="${QT_PATH}/${QT_VERSION}/gcc_64/bin:$PATH"
+if [ "$(uname -m)" = "aarch64" ]
+then
+    export GCC_STRING="gcc_arm64"
+else
+    export GCC_STRING="gcc_64"
+fi
+
+export PATH="${QT_PATH}/${QT_VERSION}/${GCC_STRING}/bin:$PATH"
+
 
 # sometimes there are errors in linuxdeploy in docker/podman when the appdir is on a mount
 appdir=${1:-`pwd`/appimage/appdir}
@@ -36,22 +44,45 @@ build_appimage/test/chiaki-unit
 DESTDIR="${appdir}" ninja -C build_appimage install
 cd appimage
 
-curl -L -O https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-chmod +x linuxdeploy-x86_64.AppImage
-curl -L -O https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-chmod +x linuxdeploy-plugin-qt-x86_64.AppImage
+export ARCH="$(uname -m)"
+curl -L -O https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${ARCH}.AppImage
+chmod +x linuxdeploy-${ARCH}.AppImage
 
-export LD_LIBRARY_PATH="${QT_PATH}/${QT_VERSION}/gcc_64/lib:$(pwd)/../build_appimage/third-party/cpp-steam-tools:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="${QT_PATH}/${QT_VERSION}/${GCC_STRING}/lib:$(pwd)/../build_appimage/third-party/cpp-steam-tools:$LD_LIBRARY_PATH"
 export QML_SOURCES_PATHS="$(pwd)/../gui/src/qml"
+export EXTRA_QT_MODULES="waylandclient;waylandcompositor"
+export EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so;libqeglfs.so;libqminimal.so;libqminimalegl.so;libqvkkhrdisplay.so;libqvnc.so;libqoffscreen.so;libqlinuxfb.so"
+if [ "$(uname -m)" = "aarch64" ]
+then
+    curl -LO https://github.com/multiarch/qemu-user-static/releases/download/v7.2.0-1/qemu-aarch64-static
+    chmod +x qemu-aarch64-static
+    curl -LO https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
+    chmod +x appimagetool-aarch64.AppImage
+    ./qemu-aarch64-static ./linuxdeploy-${ARCH}.AppImage \
+        --appdir="${appdir}" \
+        -e "${appdir}/usr/bin/chiaki" \
+        -d "${appdir}/usr/share/applications/chiaking.desktop" \
+        --exclude-library='libva*' \
+        --exclude-library='libvulkan*' \
+        --exclude-library='libhidapi*'
+    curl -L -O https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${ARCH}.AppImage
+    chmod +x linuxdeploy-plugin-qt-${ARCH}.AppImage
+    ./qemu-aarch64-static ./linuxdeploy-plugin-qt-${ARCH}.AppImage --appdir="${appdir}"
+    ./qemu-aarch64-static ./appimagetool-aarch64.AppImage "${appdir}"
+else
+    curl -L -O https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${ARCH}.AppImage
+    chmod +x linuxdeploy-plugin-qt-${ARCH}.AppImage
+    ./linuxdeploy-${ARCH}.AppImage \
+        --appdir="${appdir}" \
+        -e "${appdir}/usr/bin/chiaki" \
+        -d "${appdir}/usr/share/applications/chiaking.desktop" \
+        --plugin qt \
+        --exclude-library='libva*' \
+        --exclude-library='libvulkan*' \
+        --exclude-library='libhidapi*' \
+        --output appimage
+fi
 
-./linuxdeploy-x86_64.AppImage \
-    --appdir="${appdir}" \
-    -e "${appdir}/usr/bin/chiaki" \
-    -d "${appdir}/usr/share/applications/chiaki4deck.desktop" \
-    --plugin qt \
-    --exclude-library='libva*' \
-    --exclude-library='libvulkan*' \
-    --exclude-library='libhidapi*' \
-    --output appimage
+mv chiaki-ng-${ARCH}.AppImage chiaki-ng.AppImage
 
 mv chiaki4deck-x86_64.AppImage Chiaki4deck.AppImage

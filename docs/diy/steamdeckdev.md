@@ -1,4 +1,4 @@
-# Developing chiaki4deck updates on Steam Deck
+# Developing chiaki-ng updates on Steam Deck
 
 This is for contributors that want to make/test updates to the codebase without building a new flatpak each time.
 
@@ -8,10 +8,10 @@ This is for contributors that want to make/test updates to the codebase without 
 
 ## Setup Environment
 
-1. Install flatpak and/or build a new one with any added dependencies following [Building the Flatpak Yourself](buildit.md){target="_blank" rel="noopener"}
+1. Install flatpak with debug extension and/or build a new one with any added dependencies following [Building the Flatpak Yourself](buildit.md){target="_blank" rel="noopener"}
 
     ``` bash
-    flatpak install --user -y https://raw.githubusercontent.com/streetpea/chiaki4deck/main/scripts/flatpak/io.github.streetpea.Chiaki4deck-devel.flatpakref
+    flatpak install --user --include-debug -y https://raw.githubusercontent.com/streetpea/chiaki-ng/main/scripts/flatpak/io.github.streetpea.Chiaki4deck-devel.flatpakref
     ```
 
     !!! Info "Creating local flatpak builds"
@@ -21,7 +21,7 @@ This is for contributors that want to make/test updates to the codebase without 
         ``` bash
         sources:
         - type: git
-          url: https://github.com/streetpea/chiaki4deck.git
+          url: https://github.com/streetpea/chiaki-ng.git
           branch: main
         ```
 
@@ -30,10 +30,10 @@ This is for contributors that want to make/test updates to the codebase without 
         ``` bash
         sources:
         - type: dir
-          path: path-to-chiaki4deck-git
+          path: path-to-chiaki-ng-git
         ```
 
-2. Copy config file from chiaki4deck
+2. Copy config file from chiaki-ng
 
     ``` bash
     cp ~/.var/app/io.github.streetpea.Chiaki4deck/config/Chiaki/Chiaki.conf ~/.var/app/io.github.streetpea.Chiaki4deck-devel/config/Chiaki/Chiaki.conf 
@@ -42,39 +42,33 @@ This is for contributors that want to make/test updates to the codebase without 
 3. Install the SDK
 
     ``` bash
-    flatpak install org.kde.Sdk//6.6
+    flatpak install --user org.kde.Sdk//6.8
     ```
 
 4. Install the `Debug` extensions for the SDK
 
     ``` bash
-    flatpak install org.kde.Sdk.Debug//6.6
+    flatpak install --user org.kde.Sdk.Debug//6.8
     ```
 
-5. Install the `Debug` extension for the application build for debugging
-
-    ``` bash
-    flatpak install io.github.streetpea.Chiaki4deck.Debug
-    ```
-
-6. Clone the project onto your Steam Deck with:
+5. Clone the project onto your Steam Deck with:
 
     === "HTTPS"
 
         ``` bash
-        git clone --recurse-submodules https://github.com/streetpea/chiaki4deck.git
+        git clone --recurse-submodules https://github.com/streetpea/chiaki-ng.git
         ```
 
     === "SSH"
 
         ``` bash
-        git clone --recurse-submodules git@github.com:streetpea/chiaki4deck.git 
+        git clone --recurse-submodules git@github.com:streetpea/chiaki-ng.git
         ```
 
     === "GitHub cli"
 
         ``` bash
-        gh repo clone streetpea/chiaki4deck
+        gh repo clone streetpea/chiaki-ng
         ```
 
     !!! Question "What if I'm testing changes from my branch?"
@@ -83,7 +77,7 @@ This is for contributors that want to make/test updates to the codebase without 
 
 ## Creating and Debugging Builds without New Flatpak Build
 
-1. Enter the development version of the flatpak with the chiaki4deck source code mounted with:
+1. Enter the development version of the flatpak with the chiaki-ng source code mounted with:
 
     ``` bash
     flatpak run --command=bash --devel io.github.streetpea.Chiaki4deck-devel
@@ -112,7 +106,7 @@ This is for contributors that want to make/test updates to the codebase without 
             cmake -DCMAKE_BUILD_TYPE=Debug ..
             ```
         
-        5. Build `chiaki4deck`
+        5. Build `chiaki-ng`
 
             ``` bash
             make
@@ -138,7 +132,7 @@ This is for contributors that want to make/test updates to the codebase without 
             cmake -DCMAKE_BUILD_TYPE=Release ..
             ```
         
-        5. Build `chiaki4deck`
+        5. Build `chiaki-ng`
 
             ``` bash
             make

@@ -36,6 +36,23 @@ static bool operator==(const HostMAC &a, const HostMAC &b)	{ return memcmp(a.Get
 static bool operator!=(const HostMAC &a, const HostMAC &b)	{ return !(a == b); }
 static bool operator<(const HostMAC &a, const HostMAC &b)	{ return a.GetValue() < b.GetValue(); }
 
+class HiddenHost
+{
+	private:
+		HostMAC server_mac;
+		QString server_nickname;
+	public:
+		HiddenHost()	{ ; }
+		HiddenHost(HostMAC  server_mac, QString server_nickname)	{ this->server_mac = server_mac; this->server_nickname = server_nickname; }
+		HostMAC GetMAC() const 		{ return server_mac; }
+		QString GetNickname() const 	{ return server_nickname; }
+		void SetNickname(const QString &nickname) { this->server_nickname = nickname; }
+
+		void SaveToSettings(QSettings *settings) const;
+		static HiddenHost LoadFromSettings(QSettings *settings);
+};
+
+static bool operator==(const HiddenHost &a, const HiddenHost &b)	{ return (a.GetMAC() == b.GetMAC() && a.GetNickname() == b.GetNickname()); }
 class RegisteredHost
 {
 	private:
@@ -91,6 +108,24 @@ class ManualHost
 
 		void SaveToSettings(QSettings *settings) const;
 		static ManualHost LoadFromSettings(QSettings *settings);
+};
+static bool operator==(const ManualHost &a, const ManualHost &b)	{ return (a.GetID() == b.GetID() && a.GetHost() == b.GetHost() && a.GetRegistered() == b.GetRegistered() && a.GetMAC() == b.GetMAC()); }
+class PsnHost
+{
+	private:
+	    QString duid;
+		QString name;
+		bool ps5;
+
+	public:
+		PsnHost();
+		PsnHost(const QString &duid, const QString &name, bool ps5);
+
+		QString GetDuid() const          { return duid; }
+		QString GetName() const          { return name; }
+		bool IsPS5() const               { return ps5;  }
+		ChiakiTarget GetTarget() const;
+
 };
 
 class PsnHost

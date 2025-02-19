@@ -1,5 +1,5 @@
 
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.10)
 
 # Fix -rdynamic error with arm-vita-eabi-gcc https://github.com/tdlib/td/issues/1558
 if (POLICY CMP0065)
@@ -7,7 +7,6 @@ if (POLICY CMP0065)
 endif()
 
 project(chiaki)
-set(PKG_CONFIG_EXECUTABLE "/usr/bin/pkg-config")
 
 # Like option(), but the value can also be AUTO
 macro(tri_option name desc default)
@@ -22,7 +21,7 @@ option(CHIAKI_ENABLE_ANDROID "Enable Android (Use only as part of the Gradle Pro
 option(CHIAKI_ENABLE_BOREALIS "Enable Borealis GUI (For Nintendo Switch or PC)" OFF)
 option(CHIAKI_ENABLE_VITA "Enable PS Vita" OFF)
 tri_option(CHIAKI_ENABLE_SETSU "Enable libsetsu for touchpad input from controller" AUTO)
-tri_option(CHIAKI_ENABLE_STEAMDECK_NATIVE "Enable sdeck for native gyro and haptic feedback from Steam Deck" OFF)
+tri_option(CHIAKI_ENABLE_STEAMDECK_NATIVE "Enable sdeck for native gyro and haptic feedback from Steam Deck" ON)
 option(CHIAKI_LIB_ENABLE_OPUS "Use Opus as part of Chiaki Lib" ON)
 tri_option(CHIAKI_ENABLE_SPEEX "Use speex for echo cancelling mic playback" AUTO)
 tri_option(CHIAKI_ENABLE_RUDP "Enable Remote Play over Internet" AUTO)
@@ -38,18 +37,18 @@ option(CHIAKI_LIB_MBEDTLS_EXTERNAL_PROJECT "Fetch Mbed TLS instead of using syst
 option(CHIAKI_LIB_OPENSSL_EXTERNAL_PROJECT "Use OpenSSL as CMake external project" OFF)
 option(CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER "Use SDL Gamecontroller for Input" ON)
 option(CHIAKI_CLI_ARGP_STANDALONE "Search for standalone argp lib for CLI" OFF)
-option(CHIAKI_ENABLE_STEAM_SHORTCUT "Add ability to create Steam shortcut" OFF)
+option(CHIAKI_ENABLE_STEAM_SHORTCUT "Add ability to create Steam shortcut" ON)
 tri_option(CHIAKI_USE_SYSTEM_JERASURE "Use system-provided jerasure instead of submodule" AUTO)
 tri_option(CHIAKI_USE_SYSTEM_NANOPB "Use system-provided nanopb instead of submodule" AUTO)
 tri_option(CHIAKI_USE_SYSTEM_CURL "Use system-provided curl instead of submodule. Has to be built with experimental WebSocket support!" AUTO)
 
 set(CHIAKI_VERSION_MAJOR 1)
-set(CHIAKI_VERSION_MINOR 7)
-set(CHIAKI_VERSION_PATCH 1)
+set(CHIAKI_VERSION_MINOR 9)
+set(CHIAKI_VERSION_PATCH 5)
 set(CHIAKI_VERSION ${CHIAKI_VERSION_MAJOR}.${CHIAKI_VERSION_MINOR}.${CHIAKI_VERSION_PATCH})
 
-set(CPACK_PACKAGE_NAME "chiaki")
-set(CPACK_PACKAGE_DESCRIPTION "Open Source PlayStation Remote Play client")
+set(CPACK_PACKAGE_NAME "chiaki-ng")
+set(CPACK_PACKAGE_DESCRIPTION "Open Source PlayStation Remote Play client for Linux, Mac, and Windows")
 set(CPACK_PACKAGE_VERSION_MAJOR ${CHIAKI_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${CHIAKI_VERSION_MINOR})
 set(CPACK_PACKAGE_VERSION_PATCH ${CHIAKI_VERSION_PATCH})
@@ -60,6 +59,14 @@ include(CPack)
 
 set(CHIAKI_IS_SWITCH ${NSWITCH})
 set(CHIAKI_IS_VITA ${CHIAKI_ENABLE_VITA})
+
+if(APPLE)
+	if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64")
+		set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0 CACHE STRING "Minimum OS X deployment version" FORCE)
+	else()
+		set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0 CACHE STRING "Minimum OS X deployment version" FORCE)
+	endif()
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake;${CMAKE_CURRENT_SOURCE_DIR}/setsu/cmake")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake;${CMAKE_CURRENT_SOURCE_DIR}/steamdeck_native/cmake")
@@ -101,6 +108,9 @@ if(CHIAKI_USE_SYSTEM_CURL)
 			find_package(CURL)
 		else()
 			find_package(CURL COMPONENTS HTTP HTTPS WS WSS QUIET)
+			if(NOT TARGET CURL::libcurl_shared)
+				set(CURL_FOUND OFF)
+			endif()
 		endif()
 		set(CHIAKI_USE_SYSTEM_CURL ${CURL_FOUND})
 	else()
@@ -122,7 +132,8 @@ if(CHIAKI_ENABLE_SPEEX)
 	endif()
 endif()
 
-find_package(PythonInterp 3 REQUIRED) # Make sure nanopb doesn't find Python 2.7 because Python 2 should just die.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
 
 if(CHIAKI_USE_SYSTEM_NANOPB)
 	if(CHIAKI_USE_SYSTEM_NANOPB STREQUAL AUTO)

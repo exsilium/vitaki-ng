@@ -55,6 +55,13 @@ static QString shader_cache_path()
     return path;
 }
 
+
+static const char *render_params_path()
+{
+    static QString path = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation) + "/Chiaki/pl_render_params.conf";
+    return qPrintable(path);
+}
+
 class RenderControl : public QQuickRenderControl
 {
 public:
@@ -73,15 +80,19 @@ private:
     QWindow *window = {};
 };
 
-QmlMainWindow::QmlMainWindow(Settings *settings)
+QmlMainWindow::QmlMainWindow(Settings *settings, bool exit_app_on_stream_exit)
     : QWindow()
+    , settings(settings)
 {
-    init(settings);
+    init(settings, exit_app_on_stream_exit);
 }
 
 QmlMainWindow::QmlMainWindow(const StreamSessionConnectInfo &connect_info)
     : QWindow()
+    , settings(connect_info.settings)
 {
+    direct_stream = true;
+    emit directStreamChanged();
     init(connect_info.settings);
     backend->createSession(connect_info);
 
@@ -91,26 +102,26 @@ QmlMainWindow::QmlMainWindow(const StreamSessionConnectInfo &connect_info)
         setVideoMode(VideoMode::Stretch);
 
     if (connect_info.fullscreen || connect_info.zoom || connect_info.stretch)
-        showFullScreen();
+        fullscreenTime();
 
-    connect(session, &StreamSession::ConnectedChanged, this, [this]() {
-        if (session->IsConnected())
-            connect(session, &StreamSession::SessionQuit, qGuiApp, &QGuiApplication::quit);
-    });
+    connect(session, &StreamSession::SessionQuit, qGuiApp, &QGuiApplication::quit);
 }
 
 QmlMainWindow::~QmlMainWindow()
 {
     Q_ASSERT(!placebo_swapchain);
 
+#ifndef Q_OS_MACOS
     QMetaObject::invokeMethod(quick_render, &QQuickRenderControl::invalidate);
     render_thread->quit();
     render_thread->wait();
-    delete render_thread->parent();
+#endif
 
     delete quick_item;
     delete quick_window;
+    // calls invalidate here if not already called
     delete quick_render;
+    delete render_thread->parent();
     delete qml_engine;
     delete qt_vk_inst;
 
@@ -134,6 +145,7 @@ QmlMainWindow::~QmlMainWindow()
     pl_renderer_destroy(&placebo_renderer);
     pl_vulkan_destroy(&placebo_vulkan);
     pl_vk_inst_destroy(&placebo_vk_inst);
+    pl_options_free(&renderparams_opts);
     pl_log_destroy(&placebo_log);
 }
 
@@ -141,16 +153,21 @@ void QmlMainWindow::updateWindowType(WindowType type)
 {
     switch (type) {
     case WindowType::SelectedResolution:
+        setVideoMode(VideoMode::Normal);
+        break;
+    case WindowType::CustomResolution:
+        setVideoMode(VideoMode::Normal);
         break;
     case WindowType::Fullscreen:
-        showFullScreen();
+        fullscreenTime();
+        setVideoMode(VideoMode::Normal);
         break;
     case WindowType::Zoom:
-        showFullScreen();
+        fullscreenTime();
         setVideoMode(VideoMode::Zoom);
         break;
     case WindowType::Stretch:
-        showFullScreen();
+        fullscreenTime();
         setVideoMode(VideoMode::Stretch);
         break;
     default:
@@ -192,10 +209,15 @@ void QmlMainWindow::releaseInput()
     if (!grab_input)
         return;
     grab_input--;
-    if (!grab_input && has_video)
+    if (!grab_input && has_video && settings->GetHideCursor())
         setCursor(Qt::BlankCursor);
     if (session)
         session->BlockInput(grab_input);
+}
+
+bool QmlMainWindow::directStream() const
+{
+    return direct_stream;
 }
 
 QmlMainWindow::VideoMode QmlMainWindow::videoMode() const
@@ -231,6 +253,18 @@ void QmlMainWindow::setVideoPreset(VideoPreset preset)
     emit videoPresetChanged();
 }
 
+void QmlMainWindow::setSettings(Settings *new_settings)
+{
+    settings = new_settings;
+    QString profile = settings->GetCurrentProfile();
+    qCCritical(chiakiGui) << "Current Profile: " << profile;
+    if(profile.isEmpty())
+        QGuiApplication::setApplicationDisplayName("chiaki-ng");
+    else
+        QGuiApplication::setApplicationDisplayName(QString("chiaki-ng:%1").arg(profile));
+    this->setTitle(QGuiApplication::applicationDisplayName());
+}
+
 void QmlMainWindow::show()
 {
     QQmlComponent component(qml_engine, QUrl(QStringLiteral("qrc:/Main.qml")));
@@ -248,13 +282,22 @@ void QmlMainWindow::show()
         QMetaObject::invokeMethod(QGuiApplication::instance(), &QGuiApplication::quit, Qt::QueuedConnection);
         return;
     }
-
-    resize(1280, 720);
+    auto screen_size = QGuiApplication::primaryScreen()->availableSize();
+    resize(screen_size);
 
     if (qEnvironmentVariable("XDG_CURRENT_DESKTOP") == "gamescope")
-        showFullScreen();
+        fullscreenTime();
     else
-        showNormal();
+    {
+        if(!settings->GetGeometry().isEmpty())
+        {
+            setGeometry(settings->GetGeometry());
+            showNormal();
+        }
+        else
+            showMaximized();
+        setWindowAdjustable(true);
+    }
 }
 
 void QmlMainWindow::presentFrame(AVFrame *frame, int32_t frames_lost)
@@ -272,7 +315,7 @@ void QmlMainWindow::presentFrame(AVFrame *frame, int32_t frames_lost)
 
     if (!has_video) {
         has_video = true;
-        if (!grab_input)
+        if (!grab_input && settings->GetHideCursor())
             setCursor(Qt::BlankCursor);
         emit hasVideoChanged();
     }
@@ -322,7 +365,7 @@ AVBufferRef *QmlMainWindow::vulkanHwDeviceCtx()
     return vulkan_hw_dev_ctx;
 }
 
-void QmlMainWindow::init(Settings *settings)
+void QmlMainWindow::init(Settings *settings, bool exit_app_on_stream_exit)
 {
     setSurfaceType(QWindow::VulkanSurface);
 
@@ -382,6 +425,7 @@ void QmlMainWindow::init(Settings *settings)
 #endif
     GET_PROC(vkDestroySurfaceKHR)
     GET_PROC(vkGetPhysicalDeviceQueueFamilyProperties)
+    GET_PROC(vkGetPhysicalDeviceProperties)
 #undef GET_PROC
 
     const char *opt_dev_extensions[] = {
@@ -421,6 +465,13 @@ void QmlMainWindow::init(Settings *settings)
     });
     if (queue_it != queueFamilyProperties.end())
         vk_decode_queue_index = std::distance(queueFamilyProperties.begin(), queue_it);
+    VkPhysicalDeviceProperties device_props;
+    vk_funcs.vkGetPhysicalDeviceProperties(placebo_vulkan->phys_device, &device_props);
+    if(device_props.vendorID == 0x1002)
+    {
+        amd_card = true;
+        qCInfo(chiakiGui) << "Using amd graphics card";
+    }
 
     struct pl_cache_params cache_params = {
         .log = placebo_log,
@@ -466,13 +517,31 @@ void QmlMainWindow::init(Settings *settings)
     connect(qml_engine, &QQmlEngine::quit, this, &QWindow::close);
 
     backend = new QmlBackend(settings, this);
-    connect(backend, &QmlBackend::sessionChanged, this, [this](StreamSession *s) {
+    connect(backend, &QmlBackend::sessionChanged, this, [this, exit_app_on_stream_exit](StreamSession *s) {
         session = s;
         grab_input = 0;
         if (has_video) {
             has_video = false;
             setCursor(Qt::ArrowCursor);
             emit hasVideoChanged();
+        }
+        if(session && exit_app_on_stream_exit)
+        {
+            connect(session, &StreamSession::SessionQuit, qGuiApp, &QGuiApplication::quit);
+        }
+        if(!session)
+        {
+            setStreamWindowAdjustable(false);
+            if(qEnvironmentVariable("XDG_CURRENT_DESKTOP") != "gamescope")
+            {
+                if(!this->settings->GetGeometry().isEmpty())
+                {
+                    setGeometry(this->settings->GetGeometry());
+                    normalTime();
+                }
+                else
+                    showMaximized();
+            }
         }
     });
     connect(backend, &QmlBackend::windowTypeUpdated, this, &QmlMainWindow::updateWindowType);
@@ -510,12 +579,20 @@ void QmlMainWindow::init(Settings *settings)
         dropped_frames_current = 0;
     });
 
+    this->renderparams_opts = pl_options_alloc(this->placebo_log);
+    pl_options_reset(this->renderparams_opts, &pl_render_high_quality_params);
+    this->renderparams_changed = true;
+
+
     switch (settings->GetPlaceboPreset()) {
     case PlaceboPreset::Fast:
         setVideoPreset(VideoPreset::Fast);
         break;
     case PlaceboPreset::Default:
         setVideoPreset(VideoPreset::Default);
+        break;
+    case PlaceboPreset::Custom:
+        setVideoPreset(VideoPreset::Custom);
         break;
     case PlaceboPreset::HighQuality:
     default:
@@ -525,6 +602,44 @@ void QmlMainWindow::init(Settings *settings)
     setZoomFactor(settings->GetZoomFactor());
 }
 
+void QmlMainWindow::normalTime()
+{
+    if(windowState() == Qt::WindowFullScreen)
+    {
+        if(was_maximized)
+        {
+            showMaximized();
+            was_maximized = false;
+        }
+        else
+            showNormal();
+        setMinimumSize(QSize(0, 0));
+    }
+    QTimer::singleShot(1000, this, [this]{
+        if(session)
+            setStreamWindowAdjustable(true);
+        else
+        {
+            setWindowAdjustable(true);
+        }
+    });
+}
+
+void QmlMainWindow::fullscreenTime()
+{
+    if(windowState() == Qt::WindowFullScreen)
+        return;
+    if(session)
+        setStreamWindowAdjustable(false);
+    else
+        setWindowAdjustable(false);
+    setMinimumSize(size());
+    if(windowState() == Qt::WindowMaximized)
+        was_maximized = true;
+    else
+        was_maximized = false;
+    showFullScreen();
+}
 void QmlMainWindow::update()
 {
     Q_ASSERT(QThread::currentThread() == QGuiApplication::instance()->thread());
@@ -549,6 +664,11 @@ void QmlMainWindow::scheduleUpdate()
 
     if (!update_timer->isActive())
         update_timer->start(has_video ? 50 : 10);
+}
+
+void QmlMainWindow::updatePlacebo()
+{
+    renderparams_changed = true;
 }
 
 void QmlMainWindow::createSwapchain()
@@ -627,7 +747,7 @@ void QmlMainWindow::resizeSwapchain()
     struct pl_tex_params tex_params = {
         .w = swapchain_size.width(),
         .h = swapchain_size.height(),
-        .format = pl_find_fmt(placebo_vulkan->gpu, PL_FMT_UNORM, 4, 0, 0, PL_FMT_CAP_RENDERABLE),
+        .format = pl_find_fmt(placebo_vulkan->gpu, PL_FMT_UNORM, 4, 8, 8, PL_FMT_CAP_RENDERABLE),
         .sampleable = true,
         .renderable = true,
     };
@@ -738,7 +858,14 @@ void QmlMainWindow::render()
             .tex = tex,
         };
         if (!pl_map_avframe_ex(placebo_vulkan->gpu, &current_frame, &avparams))
+        {
             qCWarning(chiakiGui) << "Failed to map AVFrame to Placebo frame!";
+            if(backend && backend->zeroCopy())
+            {
+                qCInfo(chiakiGui) << "Mapping frame failed, trying without zero copy!";
+                backend->disableZeroCopy();
+            }
+        }
         av_frame_free(&frame);
     }
 
@@ -748,9 +875,88 @@ void QmlMainWindow::render()
         return;
     }
 
+    struct pl_color_space target_csp = sw_frame.color_space;
+    if(!pl_color_transfer_is_hdr(target_csp.transfer))
+    {
+        target_csp.hdr.max_luma = 0;
+        target_csp.hdr.min_luma = 0;
+    }
+    float target_peak = settings->GetDisplayTargetPeak() && session ? settings->GetDisplayTargetPeak() : 0;
+    int target_contrast = settings->GetDisplayTargetContrast() && session ? settings->GetDisplayTargetContrast(): 0;
+    int target_prim = settings->GetDisplayTargetPrim() && session ? settings->GetDisplayTargetPrim(): 0;
+    int target_trc = settings->GetDisplayTargetTrc() && session ? settings->GetDisplayTargetTrc(): 0;
+    struct pl_color_space hint = current_frame.color;
+
+    if(target_trc)
+        hint.transfer = static_cast<pl_color_transfer>(target_trc);
+
+    if(target_prim)
+    {
+        hint.primaries = static_cast<pl_color_primaries>(target_prim);
+        hint.hdr.prim = *pl_raw_primaries_get(hint.primaries);
+    }
+
+    if(target_peak)
+        hint.hdr.max_luma = target_peak;
+
+    switch(target_contrast)
+    {
+        case -1:
+            hint.hdr.min_luma = 1e-7;
+            break;
+        case 0:
+            hint.hdr.min_luma = target_csp.hdr.min_luma;
+            break;
+        default:
+            // Infer max_luma for current pl_color_space
+            struct pl_nominal_luma_params hint_params = {};
+            hint_params.color = &hint;
+            hint_params.metadata = PL_HDR_METADATA_HDR10;
+            hint_params.scaling = PL_HDR_NITS;
+            hint_params.out_max = &hint.hdr.max_luma;
+            pl_color_space_nominal_luma_ex(&hint_params);
+            hint.hdr.min_luma = hint.hdr.max_luma / (float)target_contrast;
+            break;
+    }
+    pl_swapchain_colorspace_hint(placebo_swapchain, &hint);
+
     struct pl_frame target_frame = {};
     pl_frame_from_swapchain(&target_frame, &sw_frame);
+    if(target_prim)
+    {
+        target_frame.color.primaries = static_cast<pl_color_primaries>(target_prim);
+        target_frame.color.hdr.prim = *pl_raw_primaries_get(target_frame.color.primaries);
+    }
 
+    if(target_trc)
+        target_frame.color.transfer = static_cast<pl_color_transfer>(target_trc);
+
+    if(target_peak && !target_frame.color.hdr.max_luma)
+    {
+        target_frame.color.hdr.max_luma = target_peak;
+    }
+    if(!target_frame.color.hdr.min_luma)
+    {
+        switch(target_contrast)
+        {
+            case -1:
+                target_frame.color.hdr.min_luma = 1e-7;
+                break;
+            case 0:
+                target_frame.color.hdr.min_luma = target_csp.hdr.min_luma;
+                break;
+            default:
+                // Infer max_luma for current pl_color_space
+                struct pl_nominal_luma_params target_params = {};
+                target_params.color = &target_frame.color;
+                target_params.metadata = PL_HDR_METADATA_HDR10;
+                target_params.scaling = PL_HDR_NITS;
+                target_params.out_max = &target_frame.color.hdr.max_luma;
+                pl_color_space_nominal_luma_ex(&target_params);
+                target_frame.color.hdr.min_luma = target_frame.color.hdr.max_luma / (float)target_contrast;
+                break;
+        }
+    }
     if (quick_need_render) {
         quick_need_render = false;
         beginFrame();
@@ -783,6 +989,28 @@ void QmlMainWindow::render()
     case VideoPreset::HighQuality:
         render_params = &pl_render_high_quality_params;
         break;
+    case VideoPreset::Custom:
+        if (renderparams_changed) {
+            renderparams_changed = false;
+            QMap<QString, QString> paramsData = settings->GetPlaceboValues();
+            QMapIterator<QString, QString> i(paramsData);
+            bool invalid_render_params = false;
+            while (i.hasNext()) {
+                i.next();
+                if(!pl_options_set_str(this->renderparams_opts, i.key().toUtf8().constData(), i.value().toUtf8().constData()))
+                {
+                    invalid_render_params = true;
+                    qCCritical(chiakiGui) << "Failed to load custom render param: " << i.key() << " with value: " << i.value();
+                }
+            }
+            if (invalid_render_params)
+                qCInfo(chiakiGui) << "Updated custom render parameters with one or more invalid parameters.";
+            else {
+                qCInfo(chiakiGui) << "Updated custom render parameters successfully.";
+            }
+        }
+        render_params = &(this->renderparams_opts->params);
+        break;
     }
 
     if (current_frame.num_planes) {
@@ -806,7 +1034,6 @@ void QmlMainWindow::render()
             }
             break;
         }
-        pl_swapchain_colorspace_hint(placebo_swapchain, &current_frame.color);
     }
 
     if (current_frame.num_planes && previous_frame.num_planes) {
@@ -842,9 +1069,9 @@ bool QmlMainWindow::handleShortcut(QKeyEvent *event)
         switch (event->key()) {
         case Qt::Key_F11:
             if (windowState() != Qt::WindowFullScreen)
-                showFullScreen();
+                fullscreenTime();
             else
-                showNormal();
+                normalTime();
             return true;
         default:
             break;
@@ -878,6 +1105,11 @@ bool QmlMainWindow::handleShortcut(QKeyEvent *event)
     }
 }
 
+bool QmlMainWindow::amdCard() const
+{
+    return amd_card;
+}
+
 bool QmlMainWindow::event(QEvent *event)
 {
     switch (event->type()) {
@@ -898,11 +1130,13 @@ bool QmlMainWindow::event(QEvent *event)
         QGuiApplication::sendEvent(quick_window, event);
         break;
     case QEvent::MouseButtonDblClick:
+        if(!settings->GetFullscreenDoubleClickEnabled())
+            break;
         if (session && !grab_input) {
             if (windowState() != Qt::WindowFullScreen)
-                showFullScreen();
+                fullscreenTime();
             else
-                showNormal();
+                normalTime();
         }
         break;
     case QEvent::KeyPress:
@@ -946,7 +1180,17 @@ bool QmlMainWindow::event(QEvent *event)
         else
             QMetaObject::invokeMethod(quick_render, std::bind(&QmlMainWindow::destroySwapchain, this), Qt::BlockingQueuedConnection);
         break;
+    case QEvent::Move:
+        if(!session && isWindowAdjustable())
+            settings->SetGeometry(geometry());
+        else if(session && settings->GetWindowType() == WindowType::AdjustableResolution && isStreamWindowAdjustable())
+            settings->SetStreamGeometry(geometry());
+        break;
     case QEvent::Resize:
+        if(!session && isWindowAdjustable())
+            settings->SetGeometry(geometry());
+        else if(session && settings->GetWindowType() == WindowType::AdjustableResolution && isStreamWindowAdjustable())
+            settings->SetStreamGeometry(geometry());
         if (isExposed())
             updateSwapchain();
         break;

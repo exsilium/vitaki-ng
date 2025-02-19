@@ -9,7 +9,8 @@ int main(int argc, char *argv[]) { return real_main(argc, argv); }
 #include <controllermanager.h>
 #include <discoverymanager.h>
 #include <qmlmainwindow.h>
-#include <QGuiApplication>
+#include <QApplication>
+#include <QtTypes>
 
 #ifdef CHIAKI_ENABLE_CLI
 #include <chiaki-cli.h>
@@ -21,6 +22,10 @@ int main(int argc, char *argv[]) { return real_main(argc, argv); }
 
 #include <stdio.h>
 #include <string.h>
+
+#ifdef CHIAKI_HAVE_WEBENGINE
+#include <QtWebEngineQuick>
+#endif
 
 #include <QCommandLineParser>
 #include <QMap>
@@ -47,7 +52,7 @@ static const QMap<QString, CLICommand> cli_commands = {
 #endif
 
 int RunStream(QGuiApplication &app, const StreamSessionConnectInfo &connect_info);
-int RunMain(QGuiApplication &app, Settings *settings);
+int RunMain(QGuiApplication &app, Settings *settings, bool exit_app_on_stream_exit);
 
 int real_main(int argc, char *argv[])
 {
@@ -61,13 +66,20 @@ int real_main(int argc, char *argv[])
 	QGuiApplication::setOrganizationName("Chiaki");
 	QGuiApplication::setApplicationName("Chiaki");
 	QGuiApplication::setApplicationVersion(CHIAKI_VERSION);
-	QGuiApplication::setApplicationDisplayName("chiaki4deck");
-	QGuiApplication::setDesktopFileName("chiaki4deck");
+	QGuiApplication::setApplicationDisplayName("chiaki-ng");
+	QGuiApplication::setDesktopFileName("chiaki-ng");
 
 	qputenv("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu");
 #if defined(Q_OS_WIN)
-	QString import_path = QFileInfo(argv[0]).dir().absolutePath() + "/qml";
+	const size_t cSize = strlen(argv[0])+1;
+	wchar_t wc[cSize];
+	mbstowcs (wc, argv[0], cSize);
+	QString import_path = QFileInfo(QString::fromWCharArray(wc)).dir().absolutePath() + "/qml";
 	qputenv("QML_IMPORT_PATH", import_path.toUtf8());
+#endif
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+	qputenv("ANV_VIDEO_DECODE", "1");
+	qputenv("RADV_PERFTEST", "video_decode");
 #endif
 #ifdef CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 	if (qEnvironmentVariableIsSet("SteamDeck") || qEnvironmentVariable("DESKTOP_SESSION").contains("steamos"))
@@ -81,7 +93,7 @@ int real_main(int argc, char *argv[])
 		return 1;
 	}
 
-    SDL_SetHint(SDL_HINT_APP_NAME, "chiaki4deck");
+    SDL_SetHint(SDL_HINT_APP_NAME, "chiaki-ng");
 
 	if(SDL_Init(SDL_INIT_AUDIO) < 0)
 	{
@@ -90,13 +102,19 @@ int real_main(int argc, char *argv[])
 	}
 
 	QGuiApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+#ifdef CHIAKI_HAVE_WEBENGINE
+	QtWebEngineQuick::initialize();
+#endif
+	QApplication app(argc, argv);
+
+	QGuiApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
 
 	QGuiApplication app(argc, argv);
 
 #ifdef Q_OS_MACOS
-	QGuiApplication::setWindowIcon(QIcon(":/icons/chiaki_macos.svg"));
+	QGuiApplication::setWindowIcon(QIcon(":/icons/chiaking_macos.svg"));
 #else
-	QGuiApplication::setWindowIcon(QIcon(":/icons/chiaki4deck.svg"));
+	QGuiApplication::setWindowIcon(QIcon(":/icons/chiaking.svg"));
 #endif
 
 	QCommandLineParser parser;
@@ -117,6 +135,9 @@ int real_main(int argc, char *argv[])
 
 	QCommandLineOption profile_option("profile", "", "profile", "Configuration profile");
 	parser.addOption(profile_option);
+
+	QCommandLineOption stream_exit_option("exit-app-on-stream-exit", "Exit the GUI application when the stream session ends.");
+	parser.addOption(stream_exit_option);
 
 	QCommandLineOption regist_key_option("registkey", "", "registkey");
 	parser.addOption(regist_key_option);
@@ -143,9 +164,18 @@ int real_main(int argc, char *argv[])
 	QStringList args = parser.positionalArguments();
 
 	Settings settings(parser.isSet(profile_option) ? parser.value(profile_option) : QString());
+	bool exit_app_on_stream_exit = parser.isSet(stream_exit_option);
+	if(parser.isSet(profile_option))
+		settings.SetCurrentProfile(parser.value(profile_option));
+	Settings alt_settings(parser.isSet(profile_option) ? "" : settings.GetCurrentProfile());
+	if(!settings.GetCurrentProfile().isEmpty())
+		QGuiApplication::setApplicationDisplayName(QString("chiaki-ng:%1").arg(settings.GetCurrentProfile()));
+	bool use_alt_settings = false;
+	if(!parser.isSet(profile_option))
+		use_alt_settings = true;
 
 	if(args.length() == 0)
-		return RunMain(app, &settings);
+		return RunMain(app, use_alt_settings ? &alt_settings : &settings, exit_app_on_stream_exit);
 
 	if(args[0] == "list")
 	{
@@ -194,7 +224,7 @@ int real_main(int argc, char *argv[])
 			regist_key = parser.value(regist_key_option).toUtf8();
 			if(regist_key.length() > sizeof(ChiakiConnectInfo::regist_key))
 			{
-				printf("Given regist key is too long (expected size <=%llu, got %d)\n",
+				printf("Given regist key is too long (expected size <=%llu, got %" PRIdQSIZETYPE")\n",
 					(unsigned long long)sizeof(ChiakiConnectInfo::regist_key),
 					regist_key.length());
 				return 1;
@@ -203,7 +233,7 @@ int real_main(int argc, char *argv[])
 			morning = QByteArray::fromBase64(parser.value(morning_option).toUtf8());
 			if(morning.length() != sizeof(ChiakiConnectInfo::morning))
 			{
-				printf("Given morning has invalid size (expected %llu, got %d)\n",
+				printf("Given morning has invalid size (expected %llu, got %" PRIdQSIZETYPE")\n",
 					(unsigned long long)sizeof(ChiakiConnectInfo::morning),
 					morning.length());
 				printf("Given morning has invalid size (expected %llu)", (unsigned long long)sizeof(ChiakiConnectInfo::morning));
@@ -225,19 +255,21 @@ int real_main(int argc, char *argv[])
 			initial_login_passcode = parser.value(passcode_option);
 			if(initial_login_passcode.length() != 4)
 			{
-				printf("Login passcode must be 4 digits. You entered %d digits)\n", initial_login_passcode.length());
+				printf("Login passcode must be 4 digits. You entered %" PRIdQSIZETYPE "digits)\n", initial_login_passcode.length());
 				return 1;
 			}
 		}
 		
 		StreamSessionConnectInfo connect_info(
-				&settings,
+				use_alt_settings ? &alt_settings : &settings,
 				target,
-				host,
-				regist_key,
-				morning,
-				initial_login_passcode,
+				std::move(host),
 				QString(),
+				std::move(regist_key),
+				std::move(morning),
+				std::move(initial_login_passcode),
+				QString(),
+				false,
 				parser.isSet(fullscreen_option),
 				parser.isSet(zoom_option),
 				parser.isSet(stretch_option));
@@ -269,9 +301,9 @@ int real_main(int argc, char *argv[])
 	}
 }
 
-int RunMain(QGuiApplication &app, Settings *settings)
+int RunMain(QGuiApplication &app, Settings *settings, bool exit_app_on_stream_exit)
 {
-	QmlMainWindow main_window(settings);
+	QmlMainWindow main_window(settings, exit_app_on_stream_exit);
 	main_window.show();
 	return app.exec();
 }

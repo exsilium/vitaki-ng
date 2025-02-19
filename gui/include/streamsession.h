@@ -19,7 +19,9 @@
 
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 #include <sdeck.h>
+#include <chiaki/orientation.h>
 #endif
+
 // Using Q_OS_MACOS instead of __APPLE__ doesn't work for the necessary enums to be included
 #ifdef __APPLE__
 #include <macMicPermission.h>
@@ -72,16 +74,23 @@ struct StreamSessionConnectInfo
 	QString log_file;
 	ChiakiTarget target;
 	QString host;
+	QString nickname;
 	QByteArray regist_key;
 	QByteArray morning;
 	QString initial_login_pin;
 	ChiakiConnectVideoProfile video_profile;
+	double packet_loss_max;
 	unsigned int audio_buffer_size;
+	int audio_volume;
 	bool fullscreen;
 	bool zoom;
 	bool stretch;
 	bool enable_keyboard;
 	bool enable_dualsense;
+	bool auto_regist;
+	float haptic_override;
+	ChiakiDisableAudioVideo audio_video_disabled;
+	RumbleHapticsIntensity rumble_haptics_intensity;
 	bool buttons_by_pos;
 	bool start_mic_unmuted;
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
@@ -96,16 +105,23 @@ struct StreamSessionConnectInfo
 	QString duid;
 	QString psn_token;
 	QString psn_account_id;
+	uint16_t dpad_touch_increment;
+	uint dpad_touch_shortcut1;
+	uint dpad_touch_shortcut2;
+	uint dpad_touch_shortcut3;
+	uint dpad_touch_shortcut4;
 
 	StreamSessionConnectInfo() {}
 	StreamSessionConnectInfo(
 			Settings *settings,
 			ChiakiTarget target,
 			QString host,
+			QString nickname,
 			QByteArray regist_key,
 			QByteArray morning,
 			QString initial_login_pin,
 			QString duid,
+			bool auto_regist,
 			bool fullscreen,
 			bool zoom,
 			bool stretch);
@@ -144,11 +160,16 @@ class StreamSession : public QObject
 		bool allow_unmute;
 		int input_block;
 		QString host;
+		int audio_volume;
 		double measured_bitrate = 0;
 		double average_packet_loss = 0;
 		QList<double> packet_loss_history;
 		bool cant_display = false;
-
+		int haptics_handheld;
+		float rumble_multiplier;
+		int ps5_rumble_intensity;
+		int ps5_trigger_intensity;
+		uint8_t led_color[3];
 		QHash<int, Controller *> controllers;
 #if CHIAKI_GUI_ENABLE_SETSU
 		Setsu *setsu;
@@ -156,13 +177,13 @@ class StreamSession : public QObject
 		ChiakiControllerState setsu_state;
 		SetsuDevice *setsu_motion_device;
 		ChiakiOrientationTracker orient_tracker;
+		ChiakiAccelNewZero setsu_accel_zero, setsu_real_accel;
 		bool orient_dirty;
 #endif
 
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 		SDeck *sdeck;
 		ChiakiControllerState sdeck_state;
-		int haptics_sdeck;
 		QQueue<haptic_packet_t> sdeck_hapticl;
 		QQueue<haptic_packet_t> sdeck_hapticr;
 		int16_t * sdeck_haptics_senderl;
@@ -172,16 +193,33 @@ class StreamSession : public QObject
 		bool sdeck_skipl, sdeck_skipr;
 		bool enable_steamdeck_haptics;
 		ChiakiOrientationTracker sdeck_orient_tracker;
+		ChiakiAccelNewZero sdeck_accel_zero, sdeck_real_accel;
 		bool sdeck_orient_dirty;
 		bool vertical_sdeck;
 #endif
+		QQueue<uint16_t> rumble_haptics;
+		bool rumble_haptics_connected;
+		bool rumble_haptics_on;
 		float PS_TOUCHPAD_MAX_X, PS_TOUCHPAD_MAX_Y;
 		ChiakiControllerState keyboard_state;
 		ChiakiControllerState touch_state;
 		QMap<int, uint8_t> touch_tracker;
 		int8_t mouse_touch_id;
+		ChiakiControllerState dpad_touch_state;
+		uint16_t dpad_touch_increment;
+		float trigger_override;
+		float haptic_override;
+		bool dpad_regular;
+		bool dpad_regular_touch_switched;
+		uint dpad_touch_shortcut1;
+		uint dpad_touch_shortcut2;
+		uint dpad_touch_shortcut3;
+		uint dpad_touch_shortcut4;
+		int8_t dpad_touch_id;
+		QPair<uint16_t, uint16_t> dpad_touch_value;
+		QTimer *dpad_touch_timer, *dpad_touch_stop_timer;
 		QElapsedTimer double_tap_timer;
-		bool rumbleHaptics;
+		RumbleHapticsIntensity rumble_haptics_intensity;
 		bool start_mic_unmuted;
 		bool session_started;
 
@@ -197,6 +235,8 @@ class StreamSession : public QObject
 		SDL_AudioDeviceID audio_in;
 		size_t audio_out_sample_size;
 		bool audio_out_drain_queue;
+		bool haptics_out_drain_queue;
+		size_t haptics_buffer_size;
 		unsigned int audio_buffer_size;
 		ChiakiHolepunchSession holepunch_session;
 #if CHIAKI_GUI_ENABLE_SPEEX
@@ -225,6 +265,8 @@ class StreamSession : public QObject
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 		void HandleSDeckEvent(SDeckEvent *event);
 #endif
+		void AdjustAdaptiveTriggerPacket(uint8_t *buf, uint8_t type);
+		void WaitHaptics();
 
 	private slots:
 		void InitAudio(unsigned int channels, unsigned int rate);
@@ -237,6 +279,8 @@ class StreamSession : public QObject
 		void SdeckQueueHaptics(haptic_packet_t packetl, haptic_packet_t packetr);
 		void ConnectSdeckHaptics();
 #endif
+		void QueueRumbleHaptics(uint16_t strength);
+		void ConnectRumbleHaptics();
 
 	public:
 		explicit StreamSession(const StreamSessionConnectInfo &connect_info, QObject *parent = nullptr);
@@ -257,6 +301,7 @@ class StreamSession : public QObject
 		double GetAveragePacketLoss()	{ return average_packet_loss; }
 		bool GetMuted()	{ return muted; }
 		void SetMuted(bool enable)	{ if (enable != muted) ToggleMute(); }
+		void SetAudioVolume(int volume) { audio_volume = volume; }
 		bool GetCantDisplay()	{ return cant_display; }
 		ChiakiErrorCode ConnectPsnConnection(QString duid, bool ps5);
 		void CancelPsnConnection(bool stop_thread);
@@ -269,6 +314,7 @@ class StreamSession : public QObject
 #endif
 		void HandleKeyboardEvent(QKeyEvent *event);
 		void HandleTouchEvent(QTouchEvent *event, qreal width, qreal height);
+		void HandleDpadTouchEvent(ChiakiControllerState *state, bool placeholder = false);
 		void HandleMouseReleaseEvent(QMouseEvent *event);
 		void HandleMousePressEvent(QMouseEvent *event);
 		void HandleMouseMoveEvent(QMouseEvent *event, qreal width, qreal height);
@@ -278,12 +324,14 @@ class StreamSession : public QObject
 
 	signals:
 		void FfmpegFrameAvailable();
+		void RumbleHapticPushed(uint16_t strength);
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 		void SdeckHapticPushed(haptic_packet_t packetl, haptic_packet_t packetr);
 #endif
 		void SessionQuit(ChiakiQuitReason reason, const QString &reason_str);
 		void LoginPINRequested(bool incorrect);
 		void DataHolepunchProgress(bool finished);
+		void AutoRegistSucceeded(const ChiakiRegisteredHost &host);
 		void NicknameReceived(QString nickname);
 		void ConnectedChanged();
 		void MeasuredBitrateChanged();
@@ -293,6 +341,7 @@ class StreamSession : public QObject
 
 	private slots:
 		void UpdateGamepads();
+		void DpadSendFeedbackState();
 		void SendFeedbackState();
 };
 
