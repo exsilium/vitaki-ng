@@ -2,7 +2,6 @@
 
 #include <chiaki/discoveryservice.h>
 
-#include <inttypes.h>
 #include <string.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -28,9 +27,8 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_discovery_service_init(ChiakiDiscoveryServi
 	service->ping_index = 0;
 
 	service->hosts = calloc(service->options.hosts_max, sizeof(ChiakiDiscoveryHost));
-	if(!service->hosts) {
+	if(!service->hosts)
 		return CHIAKI_ERR_MEMORY;
-	}
 
 	ChiakiErrorCode err;
 	service->host_discovery_infos = calloc(service->options.hosts_max, sizeof(ChiakiDiscoveryServiceHostDiscoveryInfo));
@@ -143,9 +141,8 @@ static void *discovery_service_thread_func(void *user)
 
 	ChiakiDiscoveryThread discovery_thread;
 	err = chiaki_discovery_thread_start(&discovery_thread, &service->discovery, discovery_service_host_received, service);
-	if(err != CHIAKI_ERR_SUCCESS) {
+	if(err != CHIAKI_ERR_SUCCESS)
 		goto beach;
-	}
 
 	err = chiaki_bool_pred_cond_timedwait(&service->stop_cond, service->options.ping_initial_ms);
 
@@ -227,7 +224,7 @@ static void discovery_service_ping(ChiakiDiscoveryService *service)
 	err = chiaki_discovery_send(&service->discovery, &packet, (struct sockaddr *)service->options.send_addr, service->options.send_addr_size);
 	if(err != CHIAKI_ERR_SUCCESS)
 		CHIAKI_LOGE(service->log, "Discovery Service failed to send ping for PS4");
-	if(send_extra_broadcast)
+	if(send_extra_broadcast && service->options.broadcast_addrs)
 	{
 		for(int i = 0; i < service->options.broadcast_num; i++)
 		{
@@ -253,7 +250,7 @@ static void discovery_service_ping(ChiakiDiscoveryService *service)
 	err = chiaki_discovery_send(&service->discovery, &packet, (struct sockaddr *)service->options.send_addr, service->options.send_addr_size);
 	if(err != CHIAKI_ERR_SUCCESS)
 		CHIAKI_LOGE(service->log, "Discovery Service failed to send ping for PS5");
-	if(send_extra_broadcast)
+	if(send_extra_broadcast && service->options.broadcast_addrs)
 	{
 		for(int i = 0; i < service->options.broadcast_num; i++)
 		{
@@ -296,7 +293,7 @@ static void discovery_service_drop_old_hosts(ChiakiDiscoveryService *service)
 
 		change = true;
 		if(i > 0)
-			i--;
+		    i--;
 		service->hosts_count--;
 	}
 
