@@ -242,18 +242,14 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_mutex_unlock(ChiakiMutex *mutex)
 	return CHIAKI_ERR_SUCCESS;
 }
 
-CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_init(ChiakiCond *cond)
+CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_init(ChiakiCond *cond, ChiakiMutex *mutex)
 {
 #if _WIN32
 	InitializeConditionVariable(&cond->cond);
 #elif defined(__PSVITA__)
 	snprintf(name_buffer, sizeof(name_buffer), "0x%08X", ((unsigned int) cond) + 1);
-	cond->cond_mutex_id = sceKernelCreateMutex(name_buffer, 0, 0, NULL);
-	if(cond->cond_mutex_id < 0)
-		return CHIAKI_ERR_UNKNOWN;
-	cond->cond_id = sceKernelCreateCond(name_buffer, 0, cond->cond_mutex_id, 0);
+	cond->cond_id = sceKernelCreateCond(name_buffer, 0, mutex->mutex_id, 0);
 	if (cond->cond_id < 0) {
-		sceKernelDeleteMutex(cond->cond_mutex_id);
 		return CHIAKI_ERR_UNKNOWN;
 	}
 #else
@@ -285,9 +281,6 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_cond_fini(ChiakiCond *cond)
 #if _WIN32
 #elif defined(__PSVITA__)
 	if (sceKernelDeleteCond(cond->cond_id) < 0) {
-		return CHIAKI_ERR_UNKNOWN;
-	}
-	if (sceKernelDeleteMutex(cond->cond_mutex_id) < 0) {
 		return CHIAKI_ERR_UNKNOWN;
 	}
 #else
@@ -349,7 +342,7 @@ static void set_timeout(struct timespec *timeout, uint64_t ms_from_now)
 }
 #endif
 
-#if !__APPLE__ && !__SWITCH__
+#if !__APPLE__
 CHIAKI_EXPORT ChiakiErrorCode chiaki_thread_timedjoin(ChiakiThread *thread, void **retval, uint64_t timeout_ms)
 {
 #if _WIN32
@@ -508,7 +501,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_bool_pred_cond_init(ChiakiBoolPredCond *con
 	if(err != CHIAKI_ERR_SUCCESS)
 		return err;
 
-	err = chiaki_cond_init(&cond->cond);
+	err = chiaki_cond_init(&cond->cond, &cond->mutex);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
 		chiaki_mutex_fini(&cond->mutex);

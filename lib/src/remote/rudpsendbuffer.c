@@ -55,7 +55,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_rudp_send_buffer_init(ChiakiRudpSendBuffer 
 
 	send_buffer->should_stop = false;
 	chiaki_mutex_unlock(&send_buffer->mutex);
-	err = chiaki_cond_init(&send_buffer->cond);
+	err = chiaki_cond_init(&send_buffer->cond, &send_buffer->mutex);
 	if(err != CHIAKI_ERR_SUCCESS)
 		goto error_packets;
 
