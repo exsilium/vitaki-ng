@@ -35,6 +35,7 @@ typedef struct vita_chiaki_config_t {
   // TODO: Loglevel
   // controller map id // TODO should probably replace with fully customizable map
   int controller_map_id;
+  bool circle_btn_confirm;
 } VitaChiakiConfig;
 
 void config_parse(VitaChiakiConfig* cfg);
