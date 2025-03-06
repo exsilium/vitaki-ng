@@ -8,7 +8,7 @@ Feel free to contribute to the discussion and experimentation.
 
 ## Reference/Upstream projects
 - [chiaki-ng](https://streetpea.github.io/chiaki-ng) - `000d7a49328d8c8bc91f8d5aca1878b917c4157f` - `Mar 4, 2025`
-- [vitaki-fork](https://github.com/ywnico/vitaki-fork) - `30a787709de0fbc555c5c7b8b9f9a8ee4a7f64e8`
+- [vitaki-fork](https://github.com/ywnico/vitaki-fork) - `4a92786a83da6e564c4299723a8223419a713f92` - `Feb 24, 2025`
 - [aa's chiaki vita port](https://git.catvibers.me/aa/chiaki)
 - [chiaki](https://sr.ht/~thestr4ng3r/chiaki/)
 
