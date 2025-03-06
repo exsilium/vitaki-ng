@@ -129,6 +129,7 @@ static QSet<QPair<uint16_t, uint16_t>> chiaki_steam_virtual_controller_ids({
 static ControllerManager *instance = nullptr;
 
 #define UPDATE_INTERVAL_MS 4
+#define MOVE_CHECK_MS 1000
 
 ControllerManager *ControllerManager::GetInstance()
 {
@@ -139,7 +140,7 @@ ControllerManager *ControllerManager::GetInstance()
 
 ControllerManager::ControllerManager(QObject *parent)
 	: QObject(parent), creating_controller_mapping(false),
-	joystick_allow_background_events(true), is_app_active(true)
+	joystick_allow_background_events(true), dualsense_intensity(0x00), is_app_active(true)
 {
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	SDL_SetMainReady();
@@ -155,6 +156,9 @@ ControllerManager::ControllerManager(QObject *parent)
 	auto timer = new QTimer(this);
 	connect(timer, &QTimer::timeout, this, &ControllerManager::HandleEvents);
 	timer->start(UPDATE_INTERVAL_MS);
+	auto move_timer = new QTimer(this);
+	connect(move_timer, &QTimer::timeout, this, &ControllerManager::CheckMoved);
+	move_timer->start(MOVE_CHECK_MS);
 #endif
 
 	UpdateAvailableControllers();
@@ -173,6 +177,15 @@ ControllerManager::~ControllerManager()
 void ControllerManager::SetAllowJoystickBackgroundEvents(bool enabled)
 {
 	this->joystick_allow_background_events = enabled;
+}
+
+void ControllerManager::CheckMoved()
+{
+	if(this->moved)
+	{
+		this->moved = false;
+		emit ControllerMoved();
+	}
 }
 
 void ControllerManager::SetIsAppActive(bool active)
@@ -477,6 +490,7 @@ void Controller::UpdateState(SDL_Event event)
 
 	}
 	emit StateChanged();
+	manager->moved = true;
 }
 
 inline bool Controller::HandleButtonEvent(SDL_ControllerButtonEvent event) {
@@ -763,26 +777,44 @@ ChiakiControllerState Controller::GetState()
 	return state;
 }
 
+void Controller::SetDualSenseRumble(uint8_t left, uint8_t right)
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return;
+	if(!is_dualsense && !is_dualsense_edge)
+		return;
+	DS5EffectsState_t state;
+	SDL_zero(state);
+	if(firmware_version < 0x0224)
+	{
+		state.ucEnableBits1 |= 0x01;
+		state.ucRumbleLeft = left >> 1;
+		state.ucRumbleRight = right >> 1;
+	}
+	else
+	{
+		state.ucEnableBits3 |= 0x04;
+		state.ucRumbleLeft = left;
+		state.ucRumbleRight = right;
+	}
+	state.rgucUnknown1[4] = manager->GetDualSenseIntensity();
+	state.ucEnableBits2 |= 0x40;
+	state.ucEnableBits1 |= 0x02;
+	SDL_GameControllerSendEffect(controller, &state, sizeof(state));
+#endif
+}
+
 void Controller::SetRumble(uint8_t left, uint8_t right)
 {
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	if(!controller)
 		return;
-	left = (left > 127) ? 127: left;
-	right = (right > 127) ? 127: right;
-	SDL_GameControllerRumble(controller, (uint16_t)left << 9, (uint16_t)right << 9, 5000);
+	if(is_dualsense || is_dualsense_edge)
+		SetDualSenseRumble(left, right);
+	else
+		SDL_GameControllerRumble(controller, (uint16_t)left << 8, (uint16_t)right << 8, 5000);
 #endif
-}
-
-void Controller::SetDualSenseIntensity(uint8_t trigger_intensity, uint8_t rumble_intensity)
-{
-	if((!is_dualsense && !is_dualsense_edge) || !controller)
-		return;
-	DS5EffectsState_t state;
-	SDL_zero(state);
-	state.rgucUnknown1[4] = trigger_intensity | rumble_intensity;
-	state.ucEnableBits2 |= 0x40;
-	SDL_GameControllerSendEffect(controller, &state, sizeof(state));
 }
 
 void Controller::ChangeLEDColor(const uint8_t *led_color)
@@ -801,6 +833,8 @@ void Controller::SetTriggerEffects(uint8_t type_left, const uint8_t *data_left, 
 		return;
 	DS5EffectsState_t state;
 	SDL_zero(state);
+	state.rgucUnknown1[4] = manager->GetDualSenseIntensity();
+	state.ucEnableBits2 |= 0x40;
 	state.ucEnableBits1 |= (0x04 /* left trigger */ | 0x08 /* right trigger */);
 	state.rgucLeftTriggerEffect[0] = type_left;
 	SDL_memcpy(state.rgucLeftTriggerEffect + 1, data_left, 10);
@@ -837,7 +871,10 @@ void Controller::SetHapticRumble(uint16_t left, uint16_t right)
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	if(!controller)
 		return;
-	SDL_GameControllerRumble(controller, left, right, 5000);
+	if(is_dualsense || is_dualsense_edge)
+		SetDualSenseRumble(left >> 8, right >> 8);
+	else
+		SDL_GameControllerRumble(controller, left, right, 5000);
 #endif
 }
 

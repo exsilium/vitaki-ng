@@ -103,7 +103,7 @@ jobs:
       - name: Setup Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.7.*"
+          version: "6.8.*"
           host: 'windows'
           target: 'desktop'
           modules: 'qtwebengine qtpositioning qtwebchannel qtwebsockets qtserialport'
@@ -269,7 +269,7 @@ jobs:
         run: |
           brew update
           brew uninstall pkgconfig || true
-          brew install qt@6 ffmpeg pkgconfig opus openssl cmake ninja nasm sdl2 protobuf speexdsp libplacebo wget python-setuptools json-c miniupnpc
+          brew install streetpea/streetpea/qt@6 ffmpeg pkgconfig opus openssl cmake ninja nasm sdl2 protobuf speexdsp libplacebo wget python-setuptools json-c miniupnpc
 
       - name: Configure chiaki-ng
         run: |
@@ -286,7 +286,7 @@ jobs:
           cp scripts/qtwebengine_import.qml gui/src/qml/
           $(brew --prefix)/opt/qt@6/bin/macdeployqt chiaki-ng.app -qmldir="$PWD/gui/src/qml" -libpath=$(brew --prefix)/lib
           mkdir -p chiaki-ng.app/Contents/Resources/vulkan/icd.d
-          wget https://github.com/KhronosGroup/MoltenVK/releases/download/v1.2.9/MoltenVK-macos.tar && tar xf MoltenVK-macos.tar
+          wget https://github.com/KhronosGroup/MoltenVK/releases/download/v1.2.11-artifacts/MoltenVK-macos.tar && tar xf MoltenVK-macos.tar
           cp MoltenVK/MoltenVK/dylib/macOS/* chiaki-ng.app/Contents/Resources/vulkan/icd.d
           $(brew --prefix)/opt/qt@6/bin/macdeployqt chiaki-ng.app -qmldir="$PWD/gui/src/qml" -libpath=$(brew --prefix)/lib
           ln -s ../../../../../../../Frameworks chiaki-ng.app/Contents/Frameworks/QtWebEngineCore.framework/Helpers/QtWebEngineProcess.app/Contents
@@ -353,7 +353,7 @@ jobs:
 
   build-appimage_arm64:
     name: Build chiaki-ng appimage_arm64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
     needs: create-release
@@ -374,11 +374,6 @@ jobs:
         run: |
           cp scripts/qtwebengine_import.qml gui/src/qml/
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: "arm64"
-
       - name: Run build script
         working-directory: chiaki-ng
         run: |
@@ -386,7 +381,6 @@ jobs:
           podman run --rm \
             -v "`pwd`:/build/chiaki" \
             -w "/build/chiaki" \
-            --platform linux/arm64 \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             -t docker.io/streetpea/chiaki-ng-builder:qt6.7 \
