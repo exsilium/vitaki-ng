@@ -235,7 +235,6 @@ class StreamSession : public QObject
 		SDL_AudioDeviceID audio_in;
 		size_t audio_out_sample_size;
 		bool audio_out_drain_queue;
-		bool haptics_out_drain_queue;
 		size_t haptics_buffer_size;
 		unsigned int audio_buffer_size;
 		ChiakiHolepunchSession holepunch_session;
@@ -328,6 +327,7 @@ class StreamSession : public QObject
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 		void SdeckHapticPushed(haptic_packet_t packetl, haptic_packet_t packetr);
 #endif
+		void DualSenseIntensityChanged(uint8_t intensity);
 		void SessionQuit(ChiakiQuitReason reason, const QString &reason_str);
 		void LoginPINRequested(bool incorrect);
 		void DataHolepunchProgress(bool finished);

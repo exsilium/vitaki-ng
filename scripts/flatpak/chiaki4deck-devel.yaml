@@ -27,7 +27,9 @@ finish-args:
   - --system-talk-name=org.freedesktop.login1
   - --filesystem=xdg-run/pipewire-0
   - --filesystem=xdg-run/gamescope-0
-  - --filesystem=host
+  - --filesystem=host-os:ro
+  - --filesystem=xdg-download
+  - --filesystem=xdg-documents
 
 build-options:
   arch:
@@ -391,7 +393,7 @@ modules:
     sources:
       - type: git
         url: https://github.com/libsdl-org/SDL.git
-        tag: release-2.32.0
+        tag: release-2.30.8
 
   - name: chiaki-ng
     buildsystem: cmake-ninja
