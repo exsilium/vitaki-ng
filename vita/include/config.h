@@ -7,6 +7,9 @@
 #define CFG_VERSION 1
 #define CFG_FILENAME "ux0:data/vita-chiaki/chiaki.toml"
 
+#define LOG_TO_FILE 1
+#define LOG_FILENAME "ux0:data/vita-chiaki/debug.log"
+
 /// Action to perform after terminating a session
 typedef enum vita_chiaki_disconnect_action_t {
   DISCONNECT_ACTION_ASK,      // Let the user decide each time

@@ -166,6 +166,10 @@ int main(int argc, char* argv[]) {
 
   // TODO: Cleanup
   if (context.mlog) {
+    if(context.mlog->fp) {
+      fclose(context.mlog->fp);
+      context.mlog->fp = NULL;
+    }
     free(context.mlog);
   }
 }
