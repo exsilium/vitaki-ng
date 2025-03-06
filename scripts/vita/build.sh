@@ -14,6 +14,7 @@ fi
 
 build_chiaki (){
 	pushd "${BASEDIR}"
+	rm -rf ./build
 	if [[ ! -d './build' ]]; then
 		cmake -B "./build" \
 			-DCMAKE_BUILD_TYPE=Debug \
