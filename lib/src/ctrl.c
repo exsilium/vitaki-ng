@@ -653,6 +653,8 @@ CHIAKI_EXPORT ChiakiErrorCode ctrl_message_set_fallback_session_id(ChiakiCtrl *c
 		CHIAKI_LOGI(ctrl->session->log, "Error writing time to fallback session id");
 		return CHIAKI_ERR_UNKNOWN;
 	}
+	// This LOG produces the necessary time delay for the function to work properly? Hm... Time synchronization issue.
+	CHIAKI_LOGI(ctrl->session->log, "Seconds ARE: %s with length %d", fallback_session_id, len);
 	uint8_t rand_bytes[48];
 	ChiakiErrorCode err = chiaki_random_bytes_crypt(rand_bytes, 48);
 	if(err != CHIAKI_ERR_SUCCESS)
