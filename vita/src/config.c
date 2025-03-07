@@ -46,13 +46,29 @@ ChiakiTarget parse_target(char* target_name) {
   } else if (strcmp("ps4_9", target_name) == 0) {
     return CHIAKI_TARGET_PS4_9;
   } else if (strcmp("ps4_10", target_name) == 0) {
-    return CHIAKI_TARGET_PS4_9;
+    return CHIAKI_TARGET_PS4_10;
   } else if (strcmp("ps5_unknown", target_name) == 0) {
     return CHIAKI_TARGET_PS5_UNKNOWN;
   } else if (strcmp("ps5_1", target_name) == 0) {
     return CHIAKI_TARGET_PS5_1;
   }
   return CHIAKI_TARGET_PS4_UNKNOWN;
+}
+
+bool get_circle_btn_confirm_default() {
+  // Check system settings to see if circle should be select instead of cross
+  // (should be true on Japanese vitas and false elsewhere).
+
+	int button_assign = -1;
+	int ret = 0;
+	ret = sceRegMgrGetKeyInt("/CONFIG/SYSTEM", "button_assign", &button_assign);
+  if (ret < 0) {
+    // Failed to determine. Just return false.
+    return false;
+  }
+
+  // 0 => circle select; 1 => cross select; other values invalid (so default to false)
+  return (button_assign == 0);
 }
 
 void config_parse(VitaChiakiConfig* cfg) {
@@ -62,6 +78,10 @@ void config_parse(VitaChiakiConfig* cfg) {
   cfg->resolution = CHIAKI_VIDEO_RESOLUTION_PRESET_540p;
   cfg->fps = CHIAKI_VIDEO_FPS_PRESET_30;
   cfg->controller_map_id = 0;
+
+  bool circle_btn_confirm_default = get_circle_btn_confirm_default();
+  cfg->circle_btn_confirm = circle_btn_confirm_default;
+
   if (access(CFG_FILENAME, F_OK) == 0) {
     FILE* fp = fopen(CFG_FILENAME, "r");
     char errbuf[200];
@@ -118,6 +138,9 @@ void config_parse(VitaChiakiConfig* cfg) {
       if (datum.ok) {
         cfg->controller_map_id = datum.u.i;
       }
+
+      datum = toml_bool_in(settings, "circle_btn_confirm");
+      cfg->circle_btn_confirm = datum.ok ? datum.u.b : circle_btn_confirm_default;
     }
 
     toml_array_t* regist_hosts = toml_array_in(parsed, "registered_hosts");
@@ -146,6 +169,7 @@ void config_parse(VitaChiakiConfig* cfg) {
         datum = toml_string_in(host_cfg, "target");
         if (datum.ok) {
           rstate->target = parse_target(datum.u.s);
+          host->target = parse_target(datum.u.s);
           free(datum.u.s);
         }
         datum = toml_string_in(host_cfg, "rp_key");
@@ -356,6 +380,8 @@ void config_serialize(VitaChiakiConfig* cfg) {
     fprintf(fp, "psn_account_id = \"%s\"\n", cfg->psn_account_id);
   }
   fprintf(fp, "controller_map_id = %d\n", cfg->controller_map_id);
+  fprintf(fp, "circle_btn_confirm = %s\n",
+          cfg->circle_btn_confirm ? "true" : "false");
 
   for (int i = 0; i < cfg->num_manual_hosts; i++) {
     VitaChiakiHost* host = cfg->manual_hosts[i];

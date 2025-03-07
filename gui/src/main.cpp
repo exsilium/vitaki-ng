@@ -67,7 +67,12 @@ int real_main(int argc, char *argv[])
 	QGuiApplication::setApplicationName("Chiaki");
 	QGuiApplication::setApplicationVersion(CHIAKI_VERSION);
 	QGuiApplication::setApplicationDisplayName("chiaki-ng");
-	QGuiApplication::setDesktopFileName("chiaki-ng");
+#if defined(Q_OS_LINUX)
+	if(qEnvironmentVariableIsSet("FLATPAK_ID"))
+		QGuiApplication::setDesktopFileName(qEnvironmentVariable("FLATPAK_ID"));
+	else
+#endif
+		QGuiApplication::setDesktopFileName("chiaki-ng");
 
 	qputenv("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu");
 #if defined(Q_OS_WIN)
@@ -82,7 +87,7 @@ int real_main(int argc, char *argv[])
 	qputenv("RADV_PERFTEST", "video_decode");
 #endif
 #ifdef CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
-	if (qEnvironmentVariableIsSet("SteamDeck") || qEnvironmentVariable("DESKTOP_SESSION").contains("steamos"))
+	if (qEnvironmentVariableIsSet("SteamDeck"))
 		qputenv("QT_IM_MODULE", "sdinput");
 #endif
 

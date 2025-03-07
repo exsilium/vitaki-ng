@@ -385,6 +385,7 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 
 #if CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	connect(ControllerManager::GetInstance(), &ControllerManager::AvailableControllersUpdated, this, &StreamSession::UpdateGamepads);
+	connect(this, &StreamSession::DualSenseIntensityChanged, ControllerManager::GetInstance(), &ControllerManager::SetDualSenseIntensity);
 	if(connect_info.buttons_by_pos)
 		ControllerManager::GetInstance()->SetButtonsByPos();
 #endif
@@ -955,7 +956,6 @@ void StreamSession::UpdateGamepads()
 			{
 				uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
 				uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
-				controller->SetDualSenseIntensity(trigger_intensity, rumble_intensity);
 				controller->SetDualsenseMic(muted);
 				if(this->haptics_output > 0)
 					continue;
@@ -1316,7 +1316,6 @@ void StreamSession::ReadMic(const QByteArray &micdata)
 void StreamSession::InitHaptics()
 {
 	haptics_output = 0;
-	haptics_out_drain_queue = false;
 	haptics_buffer_size = 480; //10ms * number of ms delay configured
 #if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
 	sdeck_haptics_senderr = nullptr;
@@ -1439,6 +1438,14 @@ void StreamSession::ConnectHaptics()
 		}
 		SDL_PauseAudioDevice(haptics_output, 0);
 		CHIAKI_LOGI(log.GetChiakiLog(), "Haptics Audio Device '%s' opened with %d channels @ %d Hz, buffer size %u (driver=%s)", device_name, have.channels, have.freq, have.size, SDL_GetCurrentAudioDriver());
+		QMetaObject::invokeMethod(this, [this]() {
+			const uint8_t clear_effect[10] = { 0 };
+			for(auto controller : controllers)
+			{
+				if(controller->IsDualSense() || controller->IsDualSenseEdge())
+					controller->SetTriggerEffects(0x05, clear_effect, 0x05, clear_effect);
+			}
+		});
 		return;
 	}
 	CHIAKI_LOGW(log.GetChiakiLog(), "DualSense features were enabled and a DualSense is connected, but could not find the DualSense audio device!");
@@ -1765,18 +1772,6 @@ void StreamSession::PushHapticsFrame(uint8_t *buf, size_t buf_size)
 		return;
 	}
 
-	// Start draining queue when the latency gets too high
-	if(SDL_GetQueuedAudioSize(haptics_output) > 3 * haptics_buffer_size)
-		haptics_out_drain_queue = true;
-
-	if(haptics_out_drain_queue)
-	{
-		// Stop when the queue is smaller than configured buffer size
-		if(SDL_GetQueuedAudioSize(haptics_output) >= haptics_buffer_size)
-			return;
-		haptics_out_drain_queue = false;
-	}
-
 	if (SDL_QueueAudio(haptics_output, cvt.buf, cvt.len_cvt) < 0)
 	{
 		CHIAKI_LOGE(log.GetChiakiLog(), "Failed to submit haptics audio to device: %s", SDL_GetError());
@@ -1833,6 +1828,12 @@ void StreamSession::Event(ChiakiEvent *event)
 			QMetaObject::invokeMethod(this, [this, left, right, left_adj, right_adj]() {
 				for(auto controller : controllers)
 				{
+#if CHIAKI_GUI_ENABLE_STEAMDECK_NATIVE
+					if(haptics_handheld < 1 && (controller->IsHandheld() || (sdeck && controller->IsSteamVirtualUnmasked())))
+#else
+					if(haptics_handheld < 1 && controller->IsHandheld())
+#endif
+						continue;
 					if(controller->IsDualSense() || controller->IsDualSenseEdge())
 						controller->SetRumble(left, right);
 					else
@@ -1903,10 +1904,7 @@ void StreamSession::Event(ChiakiEvent *event)
 			}
 			uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
 			uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
-			QMetaObject::invokeMethod(this, [this, trigger_intensity, rumble_intensity]() {
-				for(auto controller : controllers)
-					controller->SetDualSenseIntensity(trigger_intensity, rumble_intensity);
-			});
+			emit DualSenseIntensityChanged(trigger_intensity | rumble_intensity);
 			break;
 		}
 		case CHIAKI_EVENT_TRIGGER_INTENSITY: {
@@ -1931,10 +1929,7 @@ void StreamSession::Event(ChiakiEvent *event)
 			}
 			uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
 			uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
-			QMetaObject::invokeMethod(this, [this, trigger_intensity, rumble_intensity]() {
-				for(auto controller : controllers)
-					controller->SetDualSenseIntensity(trigger_intensity, rumble_intensity);
-			});
+			emit DualSenseIntensityChanged(trigger_intensity | rumble_intensity);
 			break;
 		}
 		case CHIAKI_EVENT_TRIGGER_EFFECTS: {
