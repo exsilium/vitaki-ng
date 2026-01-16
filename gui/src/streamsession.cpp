@@ -107,6 +107,8 @@ StreamSessionConnectInfo::StreamSessionConnectInfo(
 	this->fullscreen = fullscreen;
 	this->zoom = zoom;
 	this->stretch = stretch;
+	this->keyboard_controller_enabled = settings->GetKeyboardEnabled();
+	this->mouse_touch_enabled = settings->GetMouseTouchEnabled();
 	this->enable_keyboard = false; // TODO: from settings
 	this->enable_dualsense = true;
 	this->rumble_haptics_intensity = settings->GetRumbleHapticsIntensity();
@@ -200,6 +202,7 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 	dpad_regular_touch_switched = false;
 	rumble_haptics_intensity = RumbleHapticsIntensity::Off;
 	input_block = 0;
+	player_index = 0;
 	memset(led_color, 0, sizeof(led_color));
 	ChiakiErrorCode err;
 #if CHIAKI_LIB_ENABLE_PI_DECODER
@@ -257,7 +260,8 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 	}
 #endif
 	audio_buffer_size = connect_info.audio_buffer_size;
-
+	mouse_touch_enabled = connect_info.mouse_touch_enabled;
+	keyboard_controller_enabled = connect_info.keyboard_controller_enabled;
 	host = connect_info.host;
 	QByteArray host_str = connect_info.host.toUtf8();
 
@@ -521,16 +525,6 @@ StreamSession::~StreamSession()
 		chiaki_ffmpeg_decoder_fini(ffmpeg_decoder);
 		delete ffmpeg_decoder;
 	}
-	if(dpad_touch_stop_timer)
-	{
-		delete dpad_touch_stop_timer;
-		dpad_touch_stop_timer = nullptr;
-	}
-	if(dpad_touch_timer)
-	{
-		delete dpad_touch_timer;
-		dpad_touch_timer = nullptr;
-	}
 	if (haptics_output > 0)
 	{
 		SDL_CloseAudioDevice(haptics_output);
@@ -651,6 +645,8 @@ void StreamSession::GoHome()
 
 void StreamSession::HandleMousePressEvent(QMouseEvent *event)
 {
+	if(!mouse_touch_enabled)
+		return;
 	// left button for touchpad gestures, others => touchpad click
 	if (event->button() != Qt::MouseButton::LeftButton)
 		keyboard_state.buttons |= CHIAKI_CONTROLLER_BUTTON_TOUCHPAD;
@@ -659,6 +655,8 @@ void StreamSession::HandleMousePressEvent(QMouseEvent *event)
 
 void StreamSession::HandleMouseReleaseEvent(QMouseEvent *event)
 {
+	if(!mouse_touch_enabled)
+		return;
 	// left button => end of touchpad gesture
 	if (event->button() == Qt::LeftButton)
 	{
@@ -674,6 +672,8 @@ void StreamSession::HandleMouseReleaseEvent(QMouseEvent *event)
 
 void StreamSession::HandleMouseMoveEvent(QMouseEvent *event, qreal width, qreal height)
 {
+	if(!mouse_touch_enabled)
+		return;
 	// left button with move => touchpad gesture, otherwise ignore
 	if (event->buttons() == Qt::LeftButton)
 	{
@@ -692,6 +692,8 @@ void StreamSession::HandleMouseMoveEvent(QMouseEvent *event, qreal width, qreal 
 
 void StreamSession::HandleKeyboardEvent(QKeyEvent *event)
 {
+	if(!keyboard_controller_enabled)
+		return;
 	if(key_map.contains(Qt::Key(event->key())) == false)
 		return;
 
@@ -951,7 +953,10 @@ void StreamSession::UpdateGamepads()
 			{
 				haptics_handheld--;
 			}
-			controller->ChangeLEDColor(led_color);
+			QTimer::singleShot(1000, this, [this, controller] {
+				controller->ChangePlayerIndex(player_index);
+				controller->ChangeLEDColor(led_color);
+			});
 			if (controller->IsDualSense() || controller->IsDualSenseEdge())
 			{
 				uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
@@ -1799,7 +1804,7 @@ void StreamSession::Event(ChiakiEvent *event)
 		case CHIAKI_EVENT_QUIT:
 			if(!connected && !holepunch_session && chiaki_quit_reason_is_error(event->quit.reason) && connect_timer.elapsed() < SESSION_RETRY_SECONDS * 1000)
 			{
-				QTimer::singleShot(1000, this, &StreamSession::Start);
+				QTimer::singleShot(SESSION_RETRY_SECONDS / 3, this, &StreamSession::Start);
 				return;
 			}
 			connected = false;
@@ -1849,6 +1854,14 @@ void StreamSession::Event(ChiakiEvent *event)
 			QMetaObject::invokeMethod(this, [this, led_state]() {
 				for(auto controller : controllers)
 					controller->ChangeLEDColor(led_state);
+			});
+			break;
+		}
+		case CHIAKI_EVENT_PLAYER_INDEX: {
+			player_index = event->player_index;
+			QMetaObject::invokeMethod(this, [this]() {
+				for(auto controller : controllers)
+					controller->ChangePlayerIndex(player_index);
 			});
 			break;
 		}

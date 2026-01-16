@@ -86,6 +86,8 @@ struct StreamSessionConnectInfo
 	bool zoom;
 	bool stretch;
 	bool enable_keyboard;
+	bool keyboard_controller_enabled;
+	bool mouse_touch_enabled;
 	bool enable_dualsense;
 	bool auto_regist;
 	float haptic_override;
@@ -170,6 +172,7 @@ class StreamSession : public QObject
 		int ps5_rumble_intensity;
 		int ps5_trigger_intensity;
 		uint8_t led_color[3];
+		uint8_t player_index;
 		QHash<int, Controller *> controllers;
 #if CHIAKI_GUI_ENABLE_SETSU
 		Setsu *setsu;
@@ -209,6 +212,8 @@ class StreamSession : public QObject
 		uint16_t dpad_touch_increment;
 		float trigger_override;
 		float haptic_override;
+		bool keyboard_controller_enabled;
+		bool mouse_touch_enabled;
 		bool dpad_regular;
 		bool dpad_regular_touch_switched;
 		uint dpad_touch_shortcut1;

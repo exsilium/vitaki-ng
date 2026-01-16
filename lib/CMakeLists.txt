@@ -153,7 +153,6 @@ if(NOT CHIAKI_IS_VITA)
 	target_link_libraries(chiaki-lib PkgConfig::MINIUPNPC)
 endif()
 
-
 if (CHIAKI_ENABLE_SWITCH_CURL)
 	target_link_libraries(chiaki-lib CURL::libcurl)
 elseif (CHIAKI_ENABLE_VITA)
@@ -163,7 +162,6 @@ elseif (CHIAKI_USE_SYSTEM_CURL)
 else()
 	target_link_libraries(chiaki-lib CURL::libcurl_static)
 endif()
-
 
 if(CHIAKI_LIB_ENABLE_MBEDTLS)
 	if(CHIAKI_LIB_MBEDTLS_EXTERNAL_PROJECT)

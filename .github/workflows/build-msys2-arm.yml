@@ -1,12 +1,12 @@
-name: Build chiaki-ng msys2 x86 Windows
+name: Build chiaki-ng msys2 arm64 Windows
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-windows_x64-msys2:
-    name: Build windows msys2 version
-    runs-on: windows-latest
+  build-windows_arm64-msys2:
+    name: Build windows msys2 arm version
+    runs-on: windows-11-arm
     defaults:
       run:
         shell: msys2 {0}
@@ -21,7 +21,7 @@ jobs:
           submodules: recursive
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: mingw64
+          msystem: clangarm64
           update: true
           install: git
           pacboy: >-
@@ -67,15 +67,15 @@ jobs:
 
       - name: Build libbplacebo
         run: |
-          scripts/build-libplacebo-windows.sh
+          scripts/build-libplacebo-windows-arm.sh
 
       - name: Setup ffmpeg
         run: |
-          curl -LO https://github.com/streetpea/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip
-          unzip ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip
-          cp -a "ffmpeg-n7.1-latest-win64-gpl-shared-7.1/bin/." /mingw64/bin
-          cp -a "ffmpeg-n7.1-latest-win64-gpl-shared-7.1/include/." /mingw64/include
-          cp -a "ffmpeg-n7.1-latest-win64-gpl-shared-7.1/lib/." /mingw64/lib
+          curl -LO https://github.com/streetpea/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-winarm64-gpl-shared-7.1.zip
+          unzip ffmpeg-n7.1-latest-winarm64-gpl-shared-7.1.zip
+          cp -a "ffmpeg-n7.1-latest-winarm64-gpl-shared-7.1/bin/." /clangarm64/bin
+          cp -a "ffmpeg-n7.1-latest-winarm64-gpl-shared-7.1/include/." /clangarm64/include
+          cp -a "ffmpeg-n7.1-latest-winarm64-gpl-shared-7.1/lib/." /clangarm64/lib
 
       - name: Configure chiaki-ng
         run: |
@@ -89,9 +89,9 @@ jobs:
         run: |
           mkdir chiaki-ng-Win
           cp build/gui/chiaki.exe chiaki-ng-Win/
-          export PATH="${{ github.workspace }}/build/third-party/cpp-steam-tools:/mingw64/share/qt6/bin/:${PATH}"
-          export QT_PLUGIN_PATH="/mingw64/share/qt6/plugins"
-          export QML2_IMPORT_PATH="/mingw64/share/qt6/qml"
+          export PATH="${{ github.workspace }}/build/third-party/cpp-steam-tools:/clangarm64/share/qt6/bin/:${PATH}"
+          export QT_PLUGIN_PATH="/clangarm64/share/qt6/plugins"
+          export QML2_IMPORT_PATH="/clangarm64/share/qt6/qml"
           echo chiaki-ng-Win/chiaki.exe > tmp0.txt
           while [ -e tmp0.txt ]
           do
@@ -107,14 +107,14 @@ jobs:
           CHIAKI_VERSION_MAJOR="$(grep 'CHIAKI_VERSION_MAJOR' CMakeLists.txt | grep -Eo '[0-9]')"
           CHIAKI_VERSION_MINOR="$(grep 'CHIAKI_VERSION_MINOR' CMakeLists.txt | grep -Eo '[0-9]')"
           CHIAKI_VERSION_PATCH="$(grep 'CHIAKI_VERSION_PATCH' CMakeLists.txt | grep -Eo '[0-9]')"
-          RELEASE_PACKAGE_FILE="chiaki-ng-win_x64-MSYS2-portable-$CHIAKI_VERSION_MAJOR.$CHIAKI_VERSION_MINOR.$CHIAKI_VERSION_PATCH-test-build-${{ github.sha }}.zip"
+          RELEASE_PACKAGE_FILE="chiaki-ng-win_arm64-MSYS2-portable-$CHIAKI_VERSION_MAJOR.$CHIAKI_VERSION_MINOR.$CHIAKI_VERSION_PATCH-test-build-${{ github.sha }}.zip"
           zip -r $RELEASE_PACKAGE_FILE chiaki-ng-Win
           echo "RELEASE_PACKAGE_PATH=${RELEASE_PACKAGE_FILE}" >> $GITHUB_ENV
 
       - name: Upload chiaki-ng Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chiaki-ng-win_x64-MSYS2-Release-portable.zip
+          name: chiaki-ng-win_arm64-MSYS2-Release-portable.zip
           path: ${{ env.RELEASE_PACKAGE_PATH }}
           if-no-files-found: error
           retention-days: 7
@@ -128,7 +128,7 @@ jobs:
       - name: Upload chiaki-ng Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chiaki-ng-win_x64-MSYS2-Release-installer.exe
+          name: chiaki-ng-win_arm64-MSYS2-Release-installer.exe
           path: chiaki-ng-windows-installer.exe
           if-no-files-found: error
           retention-days: 7

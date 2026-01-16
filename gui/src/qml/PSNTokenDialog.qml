@@ -39,6 +39,8 @@ DialogView {
         Chiaki.settings.remotePlayAsk = true;
         nativeTokenForm.visible = true;
         nativeTokenForm.forceActiveFocus(Qt.TabFocusReason);
+        if(Qt.platform.os == "linux" || Qt.platform.os == "osx")
+            extBrowserButton.clicked();
     }
     function close() {
         if(webView.web)
@@ -308,6 +310,7 @@ DialogView {
             TextField {
                 id: openurl
                 text: psnurl
+                echoMode: Chiaki.settings.streamerMode ? TextInput.Password : TextInput.Normal
                 visible: false
                 Layout.preferredWidth: 400
             }
@@ -331,6 +334,7 @@ DialogView {
 
             TextField {
                 id: url
+                echoMode: Chiaki.settings.streamerMode ? TextInput.Password : TextInput.Normal
                 Layout.preferredWidth: 400
                 KeyNavigation.priority: {
                     if(readOnly)

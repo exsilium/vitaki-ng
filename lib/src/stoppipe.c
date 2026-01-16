@@ -256,7 +256,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stop_pipe_select_single(ChiakiStopPipe *sto
 #endif
 }
 
-CHIAKI_EXPORT ChiakiErrorCode chiaki_stop_pipe_connect(ChiakiStopPipe *stop_pipe, chiaki_socket_t fd, struct sockaddr *addr, size_t addrlen)
+CHIAKI_EXPORT ChiakiErrorCode chiaki_stop_pipe_connect(ChiakiStopPipe *stop_pipe, chiaki_socket_t fd, struct sockaddr *addr, size_t addrlen, uint64_t timeout_ms)
 {
 	// #ifdef __PSVITA__
 	// int r = sceNetConnect(fd, (SceNetSockaddr*) addr, addrlen);
@@ -269,7 +269,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stop_pipe_connect(ChiakiStopPipe *stop_pipe
 
 	if(CHIAKI_SOCKET_EINPROGRESS)
 	{
-		ChiakiErrorCode err = chiaki_stop_pipe_select_single(stop_pipe, fd, true, UINT64_MAX);
+		ChiakiErrorCode err = chiaki_stop_pipe_select_single(stop_pipe, fd, true, timeout_ms);
 		if(err != CHIAKI_ERR_SUCCESS)
 			return err;
 	}
@@ -300,13 +300,14 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stop_pipe_connect(ChiakiStopPipe *stop_pipe
 	if(getpeername(fd, (struct sockaddr *)(&peer), &peerlen) == 0)
 		return CHIAKI_ERR_SUCCESS;
 
-	// #ifdef __PSVITA__
-	// if (errno == SCE_NET_ERROR_ENOTCONN) {
-	// #else
-	if(errno != ENOTCONN) {
-	// #endif
+#ifdef _WIN32
+	int err = WSAGetLastError();
+	if(err != WSAENOTCONN)
 		return CHIAKI_ERR_UNKNOWN;
-	}
+#else
+	if(errno != ENOTCONN)
+		return CHIAKI_ERR_UNKNOWN;
+#endif
 
 #ifdef _WIN32
 	int sockerr;

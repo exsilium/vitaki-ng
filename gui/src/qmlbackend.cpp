@@ -7,6 +7,11 @@
 #include "psntoken.h"
 #include "systemdinhibit.h"
 #include "chiaki/remote/holepunch.h"
+#ifdef Q_OS_MACOS
+#include "macWakeSleep.h"
+#elif defined(Q_OS_WINDOWS)
+#include "windowsWakeSleep.h"
+#endif
 #if CHIAKI_GUI_ENABLE_STEAM_SHORTCUT
 #include "steamtools.h"
 #endif
@@ -200,15 +205,14 @@ QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
             }
         });
         connect(psnToken, &PSNToken::UnauthorizedError, this, &QmlBackend::psnCredsExpired);
-        connect(psnToken, &PSNToken::PSNTokenSuccess, this, []() {
-            qCWarning(chiakiGui) << "PSN Remote Connection Tokens Refreshed. Internet is back up";
-        });
         connect(psnToken, &PSNToken::PSNTokenSuccess, this, [this]() {
+            qCWarning(chiakiGui) << "PSN Remote Connection Tokens Refreshed. Internet is back up";
             resume_session = false;
             psn_reconnect_tries = 0;
             psn_reconnect_timer->stop();
             createSession(session_info);
         });
+        connect(psnToken, &PSNToken::Finished, psnToken, &QObject::deleteLater);
         QString refresh_token = this->settings->GetPsnRefreshToken();
         psnToken->RefreshPsnToken(std::move(refresh_token));
     });
@@ -218,48 +222,18 @@ QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
     });
     psn_auto_connect_timer->start(PSN_INTERNET_WAIT_SECONDS * 1000);
     sleep_inhibit = new SystemdInhibit(QGuiApplication::applicationName(), tr("Remote Play session"), "sleep", "delay", this);
-    connect(sleep_inhibit, &SystemdInhibit::sleep, this, [this]() {
-        qCInfo(chiakiGui) << "About to sleep";
-        if (session) {
-            if (this->settings->GetSuspendAction() == SuspendAction::Sleep)
-                session->GoToBed();
-            session->Stop();
-            if(!session_info.duid.isEmpty())
-                psnCancel(true);
-            resume_session = true;
-        }
-    });
-    connect(sleep_inhibit, &SystemdInhibit::resume, this, [this]() {
-        qCInfo(chiakiGui) << "Resumed from sleep";
-        if (resume_session) {
-            qCInfo(chiakiGui) << "Resuming session...";
-            resume_session = false;
-            if(session_info.duid.isEmpty())
-            {
-                createSession({
-                    session_info.settings,
-                    session_info.target,
-                    session_info.host,
-                    session_info.nickname,
-                    session_info.regist_key,
-                    session_info.morning,
-                    session_info.initial_login_pin,
-                    session_info.duid,
-                    session_info.auto_regist,
-                    session_info.fullscreen,
-                    session_info.zoom,
-                    session_info.stretch,
-                });
-            }
-            else
-            {
-                emit showPsnView();
-                setConnectState(PsnConnectState::WaitingForInternet);
-                psn_reconnect_timer->start(PSN_INTERNET_WAIT_SECONDS * 1000);
-            }
-        }
-    });
+    connect(sleep_inhibit, &SystemdInhibit::sleep, this, &QmlBackend::goToSleep);
+    connect(sleep_inhibit, &SystemdInhibit::resume, this, &QmlBackend::resumeFromSleep);
     connect(ControllerManager::GetInstance(), &ControllerManager::ControllerMoved, sleep_inhibit, &SystemdInhibit::simulateUserActivity);
+#ifdef Q_OS_MACOS
+    mac_wake_sleep = new MacWakeSleep(this);
+    connect(mac_wake_sleep, &MacWakeSleep::wokeUp, this, &QmlBackend::resumeFromSleep);
+    connect(ControllerManager::GetInstance(), &ControllerManager::ControllerMoved, mac_wake_sleep, &MacWakeSleep::simulateUserActivity);
+#elif defined(Q_OS_WINDOWS)
+    windows_wake_sleep = new WindowsWakeSleep(this);
+    connect(windows_wake_sleep, &WindowsWakeSleep::wokeUp, this, &QmlBackend::resumeFromSleep);
+    connect(windows_wake_sleep, &WindowsWakeSleep::sleeping, this, &QmlBackend::goToSleep);
+#endif
     refreshPsnToken();
 }
 
@@ -270,21 +244,18 @@ QmlBackend::~QmlBackend()
         chiaki_log_mutex.lock();
         chiaki_log_ctx = nullptr;
         chiaki_log_mutex.unlock();
-        delete session;
+        session->deleteLater();
         session = nullptr;
     }
 #ifdef CHIAKI_HAVE_WEBENGINE
     if(request_interceptor)
-        delete request_interceptor;
+        request_interceptor->deleteLater();
 #endif
     frame_thread->quit();
     frame_thread->wait();
-    delete frame_thread->parent();
-    delete psn_auto_connect_timer;
-    delete psn_reconnect_timer;
+    frame_thread->parent()->deleteLater();
     psn_connection_thread.quit();
     psn_connection_thread.wait();
-    delete psn_connection_thread.parent();
 }
 
 QmlMainWindow *QmlBackend::qmlWindow() const
@@ -308,6 +279,57 @@ void QmlBackend::updateAudioVolume()
         session->SetAudioVolume(settings->GetAudioVolume());
 }
 
+void QmlBackend::goToSleep()
+{
+    qCInfo(chiakiGui) << "About to sleep";
+    if (session) {
+        if (this->settings->GetSuspendAction() == SuspendAction::Sleep)
+            session->GoToBed();
+        session->Stop();
+        if(!session_info.duid.isEmpty())
+            psnCancel(true);
+        resume_session = true;
+    }
+}
+void QmlBackend::resumeFromSleep()
+{
+#ifdef Q_OS_WINDOWS
+    if(windows_wake_sleep->getWakeState() == WindowsWakeState::AboutToSleep)
+    {
+        windows_wake_sleep->setWakeState(WindowsWakeState::Awake);
+        return;
+    }
+    windows_wake_sleep->setWakeState(WindowsWakeState::Awake);
+#endif
+    if (resume_session) {
+        qCInfo(chiakiGui) << "Resuming session...";
+        resume_session = false;
+        if(session_info.duid.isEmpty())
+        {
+            createSession({
+                session_info.settings,
+                session_info.target,
+                session_info.host,
+                session_info.nickname,
+                session_info.regist_key,
+                session_info.morning,
+                session_info.initial_login_pin,
+                session_info.duid,
+                session_info.auto_regist,
+                session_info.fullscreen,
+                session_info.zoom,
+                session_info.stretch,
+            });
+        }
+        else
+        {
+            emit showPsnView();
+            setConnectState(PsnConnectState::WaitingForInternet);
+            psn_reconnect_timer->start(PSN_INTERNET_WAIT_SECONDS * 1000);
+        }
+    }
+}
+
 QList<QmlController*> QmlBackend::qmlControllers() const
 {
     return controllers.values();
@@ -318,7 +340,7 @@ void QmlBackend::profileChanged()
     QString profile = settings->GetCurrentProfile();
     Settings *settings_copy = new Settings(profile);
     if(settings_allocd)
-        delete settings;
+        settings->deleteLater();
     settings_allocd = true;
     settings = settings_copy;
     emit hostsChanged();
@@ -335,8 +357,8 @@ void QmlBackend::profileChanged()
 
     auto_connect_mac = settings->GetAutoConnectHost().GetServerMAC();
     auto_connect_nickname = settings->GetAutoConnectHost().GetServerNickname();
-    delete psn_reconnect_timer;
-    delete psn_auto_connect_timer;
+    psn_reconnect_timer->deleteLater();
+    psn_auto_connect_timer->deleteLater();
     psn_auto_connect_timer = new QTimer(this);
     psn_auto_connect_timer->setSingleShot(true);
     psn_reconnect_tries = 0;
@@ -395,53 +417,26 @@ void QmlBackend::profileChanged()
             psn_reconnect_timer->stop();
             createSession(session_info);
         });
+        connect(psnToken, &PSNToken::Finished, psnToken, &QObject::deleteLater);
         QString refresh_token = this->settings->GetPsnRefreshToken();
         psnToken->RefreshPsnToken(std::move(refresh_token));
     });
-    delete sleep_inhibit;
+    sleep_inhibit->deleteLater();
     sleep_inhibit = new SystemdInhibit(QGuiApplication::applicationName(), tr("Remote Play session"), "sleep", "delay", this);
-    connect(sleep_inhibit, &SystemdInhibit::sleep, this, [this]() {
-        qCInfo(chiakiGui) << "About to sleep";
-        if (session) {
-            if (this->settings->GetSuspendAction() == SuspendAction::Sleep)
-                session->GoToBed();
-            session->Stop();
-            if(!session_info.duid.isEmpty())
-                psnCancel(true);
-            resume_session = true;
-        }
-    });
-    connect(sleep_inhibit, &SystemdInhibit::resume, this, [this]() {
-        qCInfo(chiakiGui) << "Resumed from sleep";
-        if (resume_session) {
-            qCInfo(chiakiGui) << "Resuming session...";
-            resume_session = false;
-            if(session_info.duid.isEmpty())
-            {
-                createSession({
-                    session_info.settings,
-                    session_info.target,
-                    session_info.host,
-                    session_info.nickname,
-                    session_info.regist_key,
-                    session_info.morning,
-                    session_info.initial_login_pin,
-                    session_info.duid,
-                    session_info.auto_regist,
-                    session_info.fullscreen,
-                    session_info.zoom,
-                    session_info.stretch,
-                });
-            }
-            else
-            {
-                emit showPsnView();
-                setConnectState(PsnConnectState::WaitingForInternet);
-                psn_reconnect_timer->start(PSN_INTERNET_WAIT_SECONDS * 1000);
-            }
-        }
-    });
+    connect(sleep_inhibit, &SystemdInhibit::sleep, this, &QmlBackend::goToSleep);
+    connect(sleep_inhibit, &SystemdInhibit::resume, this, &QmlBackend::resumeFromSleep);
     connect(ControllerManager::GetInstance(), &ControllerManager::ControllerMoved, sleep_inhibit, &SystemdInhibit::simulateUserActivity);
+#ifdef Q_OS_MACOS
+    mac_wake_sleep->deleteLater();
+    mac_wake_sleep = new MacWakeSleep(this);
+    connect(mac_wake_sleep, &MacWakeSleep::wokeUp, this, &QmlBackend::resumeFromSleep);
+    connect(ControllerManager::GetInstance(), &ControllerManager::ControllerMoved, mac_wake_sleep, &MacWakeSleep::simulateUserActivity);
+#elif defined(Q_OS_WINDOWS)
+    windows_wake_sleep->deleteLater();
+    windows_wake_sleep = new WindowsWakeSleep(this);
+    connect(windows_wake_sleep, &WindowsWakeSleep::wokeUp, this, &QmlBackend::resumeFromSleep);
+    connect(windows_wake_sleep, &WindowsWakeSleep::sleeping, this, &QmlBackend::goToSleep);
+#endif
     refreshPsnToken();
     emit hostsChanged();
     emit hiddenHostsChanged();
@@ -618,7 +613,7 @@ void QmlBackend::checkPsnConnection(const ChiakiErrorCode &err)
                 chiaki_log_mutex.lock();
                 chiaki_log_ctx = nullptr;
                 chiaki_log_mutex.unlock();
-                delete session;
+                session->deleteLater();
                 session = nullptr;
                 setDiscoveryEnabled(true);
             }
@@ -630,7 +625,7 @@ void QmlBackend::checkPsnConnection(const ChiakiErrorCode &err)
                 chiaki_log_mutex.lock();
                 chiaki_log_ctx = nullptr;
                 chiaki_log_mutex.unlock();
-                delete session;
+                session->deleteLater();
                 session = nullptr;
                 setDiscoveryEnabled(true);
             }
@@ -642,7 +637,7 @@ void QmlBackend::checkPsnConnection(const ChiakiErrorCode &err)
                 chiaki_log_mutex.lock();
                 chiaki_log_ctx = nullptr;
                 chiaki_log_mutex.unlock();
-                delete session;
+                session->deleteLater();
                 session = nullptr;
                 setDiscoveryEnabled(true);
             }
@@ -658,7 +653,7 @@ void QmlBackend::psnSessionStart()
         chiaki_log_mutex.lock();
         chiaki_log_ctx = nullptr;
         chiaki_log_mutex.unlock();
-        delete session;
+        session->deleteLater();
         session = nullptr;
         emit error(tr("Stream failed"), tr("Failed to start Stream Session: %1").arg(e.what()));
         return;
@@ -714,13 +709,6 @@ void QmlBackend::createSession(const StreamSessionConnectInfo &connect_info)
         }
 #endif
     }
-#if defined(Q_OS_WIN)
-    if(session_info.hw_decoder == "vulkan" && session_info.video_profile.codec == CHIAKI_CODEC_H265_HDR && window->amdCard())
-    {
-        qCInfo(chiakiGui) << "Using amd card with vulkan hw decoding and hdr not supported on Windows, falling back to d3d11va...";
-        session_info.hw_decoder = "d3d11va";
-    }
-#endif
     if (session_info.hw_decoder == "vulkan") {
 #if defined(Q_OS_LINUX)
         if(qEnvironmentVariableIsSet("APPIMAGE") && (qEnvironmentVariableIsSet("SteamDeck") || qEnvironmentVariable("DESKTOP_SESSION").contains("steamos")))
@@ -814,6 +802,13 @@ void QmlBackend::createSession(const StreamSessionConnectInfo &connect_info)
 
         sleep_inhibit->release();
         setDiscoveryEnabled(true);
+#ifdef Q_OS_WINDOWS
+        qCInfo(chiakiGui) << "Checking sleep state: ";
+        if(windows_wake_sleep->getWakeState() == WindowsWakeState::Awake)
+            QTimer::singleShot(2000, this, &QmlBackend::resumeFromSleep);
+        else
+            windows_wake_sleep->setWakeState(WindowsWakeState::Sleeping);
+#endif
     });
 
     connect(session, &StreamSession::LoginPINRequested, this, [this, connect_info](bool incorrect) {
@@ -881,7 +876,7 @@ void QmlBackend::createSession(const StreamSessionConnectInfo &connect_info)
                 chiaki_log_mutex.lock();
                 chiaki_log_ctx = nullptr;
                 chiaki_log_mutex.unlock();
-                delete session;
+                session->deleteLater();
                 session = nullptr;
                 return;
             }
@@ -1109,6 +1104,7 @@ void QmlBackend::autoRegister()
         connect(psnToken, &PSNToken::PSNTokenSuccess, this, [this, info]() {
             createSession(info);
         });
+        connect(psnToken, &PSNToken::Finished, psnToken, &QObject::deleteLater);
         QString refresh_token = settings->GetPsnRefreshToken();
         psnToken->RefreshPsnToken(std::move(refresh_token));
     }
@@ -1126,6 +1122,7 @@ void QmlBackend::finishAutoRegister(const ChiakiRegisteredHost &host)
     }
     settings->AddRegisteredHost(host);
     setConnectState(PsnConnectState::RegistrationFinished);
+    updatePsnHosts();
 }
 
 #ifdef CHIAKI_HAVE_WEBENGINE
@@ -1279,6 +1276,7 @@ void QmlBackend::connectToHost(int index, QString nickname)
             connect(psnToken, &PSNToken::PSNTokenSuccess, this, [this, info]() {
                 createSession(info);
             });
+                connect(psnToken, &PSNToken::Finished, psnToken, &QObject::deleteLater);
             QString refresh_token = settings->GetPsnRefreshToken();
             psnToken->RefreshPsnToken(std::move(refresh_token));
         }
@@ -1346,7 +1344,6 @@ bool QmlBackend::handlePsnLoginRedirect(const QUrl &url)
     }
     PSNAccountID *psnId = new PSNAccountID(settings, this);
     connect(psnId, &PSNAccountID::AccountIDResponse, this, [this, psnId](const QString &accountId) {
-        psnId->deleteLater();
         emit psnLoginAccountIdDone(accountId);
     });
     connect(psnId, &PSNAccountID::AccountIDResponse, this, &QmlBackend::updatePsnHosts);
@@ -1354,6 +1351,7 @@ bool QmlBackend::handlePsnLoginRedirect(const QUrl &url)
         qCWarning(chiakiGui) << "Could not retrieve psn token or account Id!" << error;
         emit psnLoginAccountIdError(error);
     });
+    connect(psnId, &PSNAccountID::Finished, psnId, &QObject::deleteLater);
     psnId->GetPsnAccountId(code);
     emit psnTokenChanged();
     return true;
@@ -1985,7 +1983,7 @@ void QmlBackend::updateDiscoveryHosts()
                     chiaki_log_mutex.lock();
                     chiaki_log_ctx = nullptr;
                     chiaki_log_mutex.unlock();
-                    delete session;
+                    session->deleteLater();
                     session = nullptr;
                 }
                 if(session_start_succeeded)
@@ -2037,7 +2035,7 @@ QString QmlBackend::getExecutable() {
     return QCoreApplication::applicationFilePath();
 }
 
-void QmlBackend::createSteamShortcut(QString shortcutName, QString launchOptions, const QJSValue &callback)
+void QmlBackend::createSteamShortcut(QString shortcutName, QString launchOptions, const QJSValue &callback, QString steamDir)
 {
     QJSValue cb = callback;
     QString controller_layout_workshop_id = "3049833406";
@@ -2067,7 +2065,7 @@ void QmlBackend::createSteamShortcut(QString shortcutName, QString launchOptions
         if (icb.isCallable())
             icb.call({errorMessage, false, true});
     };
-    SteamTools* steam_tools = new SteamTools(infoLambda, errorLambda);
+    SteamTools* steam_tools = new SteamTools(infoLambda, errorLambda, steamDir);
     bool steamExists = steam_tools->steamExists();
     if(!steamExists)
     {
@@ -2125,31 +2123,17 @@ void QmlBackend::createSteamShortcut(QString shortcutName, QString launchOptions
 QString QmlBackend::openPsnLink()
 {
     QUrl url = psnLoginUrl();
-    if(QDesktopServices::openUrl(url) && (qEnvironmentVariable("XDG_CURRENT_DESKTOP") != "gamescope"))
-    {
-        qCWarning(chiakiGui) << "Launched browser.";
-        return QString();
-    }
-    else
-    {
-        qCWarning(chiakiGui) << "Could not launch browser.";
-        return QString(url.toEncoded());
-    }
+    QDesktopServices::openUrl(url);
+    url = psnLoginUrl();
+    return QString(url.toEncoded());
 }
 
 QString QmlBackend::openPlaceboOptionsLink()
 {
     QUrl url = QUrl("https://libplacebo.org/options/");
-    if(QDesktopServices::openUrl(url) && (qEnvironmentVariable("XDG_CURRENT_DESKTOP") != "gamescope"))
-    {
-        qCWarning(chiakiGui) << "Launched browser.";
-        return QString();
-    }
-    else
-    {
-        qCWarning(chiakiGui) << "Could not launch browser.";
-        return QString(url.toEncoded());
-    }
+    QDesktopServices::openUrl(url);
+    url = psnLoginUrl();
+    return QString(url.toEncoded());
 }
 
 bool QmlBackend::checkPsnRedirectURL(const QUrl &url) const
@@ -2183,6 +2167,7 @@ void QmlBackend::initPsnAuth(const QUrl &url, const QJSValue &callback)
         if (cb.isCallable())
             cb.call({QString("[I] PSN Remote Connection Tokens Generated."), true, true});
     });
+    connect(psnId, &PSNAccountID::Finished, psnId, &QObject::deleteLater);
     psnId->GetPsnAccountId(code);
     emit psnTokenChanged();
 }
@@ -2198,6 +2183,7 @@ void QmlBackend::refreshAuth()
         qCWarning(chiakiGui) << "PSN Remote Connection Tokens Refreshed.";
     });
     connect(psnToken, &PSNToken::PSNTokenSuccess, this, &QmlBackend::updatePsnHosts);
+    connect(psnToken, &PSNToken::Finished, psnToken, &QObject::deleteLater);
     QString refresh_token = settings->GetPsnRefreshToken();
     psnToken->RefreshPsnToken(std::move(refresh_token));
 }

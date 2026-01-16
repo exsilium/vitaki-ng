@@ -27,6 +27,8 @@ DialogView {
         {
             nativeLoginForm.visible = true;
             nativeLoginForm.forceActiveFocus(Qt.TabFocusReason);
+            if(Qt.platform.os == "linux" || Qt.platform.os == "osx")
+                extBrowserButton.clicked();
         }
         else
         {
@@ -302,6 +304,7 @@ DialogView {
 
             TextField {
                 id: openurl
+                echoMode: Chiaki.settings.streamerMode ? TextInput.Password : TextInput.Normal
                 text: psnurl
                 visible: false
                 Layout.preferredWidth: 400
@@ -326,6 +329,7 @@ DialogView {
 
             TextField {
                 id: url
+                echoMode: Chiaki.settings.streamerMode ? TextInput.Password : TextInput.Normal
                 Layout.preferredWidth: 400
                 KeyNavigation.priority: {
                     if(readOnly)
@@ -382,6 +386,7 @@ DialogView {
 
             C.TextField {
                 id: usernameField
+                echoMode: Chiaki.settings.streamerMode ? TextInput.Password : TextInput.Normal
                 Layout.preferredWidth: 400
                 Layout.alignment: Qt.AlignCenter
                 firstInFocusChain: true

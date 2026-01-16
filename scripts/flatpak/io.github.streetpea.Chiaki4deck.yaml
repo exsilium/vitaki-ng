@@ -1,5 +1,4 @@
 app-id: io.github.streetpea.Chiaki4deck
-branch: chiaki4deck
 runtime: org.kde.Platform
 runtime-version: '6.9'
 sdk: org.kde.Sdk
@@ -30,12 +29,14 @@ finish-args:
   - --filesystem=xdg-download
   - --filesystem=xdg-documents
   - --filesystem=~/.steam/steam
+
 cleanup-commands:
   - /app/cleanup-BaseApp.sh
+
 build-options:
   arch:
     aarch64:
-      prepend-pkg-config-path: /app/lib/aarch64-linux-gnu/pkgconfig
+      prepend-pkg-config-path: "/app/lib/pkgconfig:/app/lib64/pkgconfig:/app/lib/aarch64-linux-gnu/pkgconfig:/app/lib64/aarch64-linux-gnu/pkgconfig"
     x86_64:
       prepend-pkg-config-path: "/app/lib/pkgconfig:/app/lib64/pkgconfig:/app/lib/x86_64-linux-gnu/pkgconfig:/app/lib64/x86_64-linux-gnu/pkgconfig"
 
@@ -135,7 +136,7 @@ modules:
   - name: hidapi
     buildsystem: cmake-ninja
     config-opts:
-      - "-DHIDAPI_WITH_LIBUSB=FALSE"
+      - -DHIDAPI_WITH_LIBUSB=FALSE
     sources:
       - type: git
         url: https://github.com/libusb/hidapi.git
@@ -153,9 +154,9 @@ modules:
       - make
       - make install
     sources:
-    - type: git
-      url: https://gitlab.xiph.org/xiph/speexdsp.git
-      tag: SpeexDSP-1.2.1
+      - type: git
+        url: https://gitlab.xiph.org/xiph/speexdsp.git
+        tag: SpeexDSP-1.2.1
 
   - name: json-c
     buildsystem: cmake-ninja
@@ -200,7 +201,8 @@ modules:
     sources:
       - type: git
         url: https://github.com/streetpea/chiaki-ng.git
-        branch: chiaki4deck
+        branch: main
     post-install:
-      - "install -Dm755 ../scripts/psn-account-id.py /app/bin/psn-account-id"
-      - "install -Dm755 ../scripts/vulkan-gamescope-layers/VkLayer_FROG_gamescope_wsi.x86_64.json /app/share/vulkan/implicit_layer.d/VkLayer_FROG_gamescope_wsi.x86_64.json"
+      - install -Dm755 ../scripts/psn-account-id.py /app/bin/psn-account-id
+      - install -Dm755 ../scripts/vulkan-gamescope-layers/VkLayer_FROG_gamescope_wsi.x86_64.json
+        /app/share/vulkan/implicit_layer.d/VkLayer_FROG_gamescope_wsi.x86_64.json
