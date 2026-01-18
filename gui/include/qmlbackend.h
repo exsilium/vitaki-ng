@@ -18,6 +18,11 @@
 #endif
 
 class SystemdInhibit;
+#ifdef Q_OS_MACOS
+    class MacWakeSleep;
+#elif defined(Q_OS_WINDOWS)
+    class WindowsWakeSleep;
+#endif
 
 class QmlRegist : public QObject
 {
@@ -163,6 +168,8 @@ public:
 
     void profileChanged();
 
+    void goToSleep();
+
     bool zeroCopy()        { return !disable_zero_copy; };
     void disableZeroCopy() { disable_zero_copy = true; };
 
@@ -195,7 +202,7 @@ public:
     Q_INVOKABLE void controllerMappingApply();
     Q_INVOKABLE void autoRegister();
 #if CHIAKI_GUI_ENABLE_STEAM_SHORTCUT
-    Q_INVOKABLE void createSteamShortcut(QString shortcutName, QString launchOptions, const QJSValue &callback);
+    Q_INVOKABLE void createSteamShortcut(QString shortcutName, QString launchOptions, const QJSValue &callback, QString steamDir);
 #endif
 #ifdef CHIAKI_HAVE_WEBENGINE
     Q_INVOKABLE void setWebEngineHints(QQuickWebEngineProfile *profile);
@@ -261,6 +268,7 @@ private:
     void updatePsnHosts();
     void updatePsnHostsThread();
     void updateAudioVolume();
+    void resumeFromSleep();
     uint32_t getStreamShortcut() const;
     void updateStreamShortcut();
     QString getExecutable();
@@ -282,6 +290,11 @@ private:
     DisplayServer regist_dialog_server;
     StreamSessionConnectInfo session_info = {};
     SystemdInhibit *sleep_inhibit = {};
+#ifdef Q_OS_MACOS
+    MacWakeSleep *mac_wake_sleep = {};
+#elif defined(Q_OS_WINDOWS)
+    WindowsWakeSleep *windows_wake_sleep = {};
+#endif
     bool controller_mapping_default_mapping = false;
     bool controller_mapping_altered = false;
     bool updating_psn_hosts = false;

@@ -29,6 +29,7 @@ class QmlSettings : public QObject
     Q_PROPERTY(int echoSuppressLevel READ echoSuppressLevel WRITE setEchoSuppressLevel NOTIFY echoSuppressLevelChanged)
 #endif
     Q_PROPERTY(bool showStreamStats READ showStreamStats WRITE setShowStreamStats NOTIFY showStreamStatsChanged)
+    Q_PROPERTY(bool streamerMode READ streamerMode WRITE setStreamerMode NOTIFY streamerModeChanged)
     Q_PROPERTY(float hapticOverride READ hapticOverride WRITE setHapticOverride NOTIFY hapticOverrideChanged)
     Q_PROPERTY(int displayTargetContrast READ displayTargetContrast WRITE setDisplayTargetContrast NOTIFY displayTargetContrastChanged)
     Q_PROPERTY(int displayTargetPeak READ displayTargetPeak WRITE setDisplayTargetPeak NOTIFY displayTargetPeakChanged)
@@ -71,6 +72,8 @@ class QmlSettings : public QObject
     Q_PROPERTY(QString psnAuthToken READ psnAuthToken WRITE setPsnAuthToken NOTIFY psnAuthTokenChanged)
     Q_PROPERTY(QString psnAuthTokenExpiry READ psnAuthTokenExpiry WRITE setPsnAuthTokenExpiry NOTIFY psnAuthTokenExpiryChanged)
     Q_PROPERTY(QString psnAccountId READ psnAccountId WRITE setPsnAccountId NOTIFY psnAccountIdChanged)
+    Q_PROPERTY(bool mouseTouchEnabled READ mouseTouchEnabled WRITE setMouseTouchEnabled NOTIFY mouseTouchEnabledChanged)
+    Q_PROPERTY(bool keyboardEnabled READ keyboardEnabled WRITE setKeyboardEnabled NOTIFY keyboardEnabledChanged)
     Q_PROPERTY(bool dpadTouchEnabled READ dpadTouchEnabled WRITE setDpadTouchEnabled NOTIFY dpadTouchEnabledChanged)
     Q_PROPERTY(uint16_t dpadTouchIncrement READ dpadTouchIncrement WRITE setDpadTouchIncrement NOTIFY dpadTouchIncrementChanged)
     Q_PROPERTY(uint dpadTouchShortcut1 READ dpadTouchShortcut1 WRITE setDpadTouchShortcut1 NOTIFY dpadTouchShortcut1Changed)
@@ -162,6 +165,9 @@ public:
 
     bool showStreamStats() const;
     void setShowStreamStats(bool enabled);
+
+    bool streamerMode() const;
+    void setStreamerMode(bool enabled);
 
     int displayTargetContrast() const;
     void setDisplayTargetContrast(int contrast);
@@ -489,6 +495,12 @@ public:
     QString psnAccountId() const;
     void setPsnAccountId(const QString &account_id);
 
+    bool mouseTouchEnabled() const;
+    void setMouseTouchEnabled(bool enabled);
+
+    bool keyboardEnabled() const;
+    void setKeyboardEnabled(bool enabled);
+
     bool dpadTouchEnabled() const;
     void setDpadTouchEnabled(bool enabled);
 
@@ -542,6 +554,7 @@ public:
     Q_INVOKABLE QString changeControllerKey(int button, int key);
     Q_INVOKABLE void clearKeyMapping();
     Q_INVOKABLE void exportSettings();
+    Q_INVOKABLE QString chooseSteamBasePath();
     Q_INVOKABLE void exportPlaceboSettings();
     Q_INVOKABLE void importSettings();
     Q_INVOKABLE void importPlaceboSettings();
@@ -577,6 +590,7 @@ signals:
     void hapticOverrideChanged();
     void audioVideoDisabledChanged();
     void showStreamStatsChanged();
+    void streamerModeChanged();
     void fpsLocalPS4Changed();
     void fpsRemotePS4Changed();
     void fpsLocalPS5Changed();
@@ -609,6 +623,8 @@ signals:
     void psnRefreshTokenChanged();
     void psnAuthTokenExpiryChanged();
     void psnAccountIdChanged();
+    void mouseTouchEnabledChanged();
+    void keyboardEnabledChanged();
     void dpadTouchEnabledChanged();
     void dpadTouchIncrementChanged();
     void dpadTouchShortcut1Changed();

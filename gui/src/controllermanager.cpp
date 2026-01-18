@@ -167,8 +167,6 @@ ControllerManager::ControllerManager(QObject *parent)
 ControllerManager::~ControllerManager()
 {
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
-	for (Controller *controller : std::as_const(open_controllers))
-		delete controller;
 	open_controllers.clear();
 	SDL_Quit();
 #endif
@@ -823,6 +821,15 @@ void Controller::ChangeLEDColor(const uint8_t *led_color)
 	if(!controller || !has_led)
 		return;
 	SDL_GameControllerSetLED(controller, led_color[0], led_color[1], led_color[2]);
+#endif
+}
+
+void Controller::ChangePlayerIndex(const uint8_t player_index)
+{
+#ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
+	if(!controller)
+		return;
+	SDL_GameControllerSetPlayerIndex(controller, player_index);
 #endif
 }
 

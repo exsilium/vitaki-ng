@@ -160,6 +160,7 @@ typedef enum {
 	CHIAKI_EVENT_TRIGGER_EFFECTS,
 	CHIAKI_EVENT_MOTION_RESET,
 	CHIAKI_EVENT_LED_COLOR,
+	CHIAKI_EVENT_PLAYER_INDEX,
 	CHIAKI_EVENT_HAPTIC_INTENSITY,
 	CHIAKI_EVENT_TRIGGER_INTENSITY,
 } ChiakiEventType;
@@ -175,6 +176,7 @@ typedef struct chiaki_event_t
 		ChiakiRegisteredHost host;
 		ChiakiTriggerEffectsEvent trigger_effects;
 		uint8_t led_state[0x3];
+		uint8_t player_index;
 		struct
 		{
 			bool pin_incorrect; // false on first request, true if the pin entered before was incorrect
@@ -226,6 +228,7 @@ typedef struct chiaki_session_t
 	uint32_t mtu_in;
 	uint32_t mtu_out;
 	uint64_t rtt_us;
+	bool dontfrag;
 	ChiakiECDH ecdh;
 
 	ChiakiQuitReason quit_reason;

@@ -802,6 +802,25 @@ void Settings::SetCurrentProfile(QString profile)
 	emit CurrentProfileChanged();
 }
 
+bool Settings::GetKeyboardEnabled() const
+{
+	return settings.value("settings/keyboard_enabled", true).toBool();
+}
+void Settings::SetKeyboardEnabled(bool enabled)
+{
+	settings.setValue("settings/keyboard_enabled", enabled);
+}
+
+bool Settings::GetMouseTouchEnabled() const
+{
+	return settings.value("settings/mouse_touch_enabled", true).toBool();
+}
+void Settings::SetMouseTouchEnabled(bool enabled)
+{
+	settings.setValue("settings/mouse_touch_enabled", enabled);
+}
+
+
 bool Settings::GetDpadTouchEnabled() const
 {
 	return settings.value("settings/dpad_touch_enabled", true).toBool();
@@ -1955,6 +1974,7 @@ void Settings::SaveRegisteredHosts(QSettings *qsettings)
 void Settings::AddRegisteredHost(const RegisteredHost &host)
 {
 	registered_hosts[host.GetServerMAC()] = host;
+	nickname_registered_hosts[host.GetServerNickname()] = host;
 	SaveRegisteredHosts();
 	emit RegisteredHostsUpdated();
 }

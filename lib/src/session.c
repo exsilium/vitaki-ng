@@ -185,6 +185,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_session_init(ChiakiSession *session, Chiaki
 	session->auto_regist = connect_info->auto_regist;
 	session->holepunch_session = connect_info->holepunch_session;
 	session->rudp = NULL;
+	session->dontfrag = true;
 
 	ChiakiErrorCode err = chiaki_mutex_init(&session->state_mutex, false);
 	if(err != CHIAKI_ERR_SUCCESS)
@@ -565,7 +566,7 @@ static void *session_thread_func(void *arg)
 		session->login_pin = NULL;
 		session->login_pin_size = 0;
 		// wait for session id or new login pin request
-		err = chiaki_cond_timedwait_pred(&session->state_cond, &session->state_mutex, SESSION_EXPECT_TIMEOUT_MS, session_check_state_pred_ctrl_start, session);
+		err = chiaki_cond_timedwait_pred(&session->state_cond, &session->state_mutex, SESSION_EXPECT_CTRL_START_MS, session_check_state_pred_ctrl_start, session);
 		CHECK_STOP(quit_ctrl);
 	}
 
@@ -631,6 +632,12 @@ ctrl_failed:
 
 	err = chiaki_senkusha_run(&senkusha, &session->mtu_in, &session->mtu_out, &session->rtt_us, data_sock);
 	chiaki_senkusha_fini(&senkusha);
+	CHECK_STOP(quit_ctrl);
+	if(session->ctrl_failed)
+	{
+		CHIAKI_LOGE(session->log, "Ctrl has failed since session started, exiting");
+		QUIT(quit_ctrl);
+	}
 
 	if(err == CHIAKI_ERR_SUCCESS)
 		CHIAKI_LOGI(session->log, "Senkusha completed successfully");
@@ -642,6 +649,7 @@ ctrl_failed:
 		session->mtu_in = 1454;
 		session->mtu_out = 1454;
 		session->rtt_us = 1000;
+		session->dontfrag = false;
 	}
 #endif
 	if(session->rudp)
@@ -833,7 +841,7 @@ static ChiakiErrorCode session_thread_request_session(ChiakiSession *session, Ch
 				CHIAKI_LOGE(session->log, "Failed to set session socket to non-blocking: %s", chiaki_error_string(err));
 
 			chiaki_mutex_unlock(&session->state_mutex);
-			err = chiaki_stop_pipe_connect(&session->stop_pipe, session_sock, sa, ai->ai_addrlen);
+			err = chiaki_stop_pipe_connect(&session->stop_pipe, session_sock, sa, ai->ai_addrlen, 5000);
 			chiaki_mutex_lock(&session->state_mutex);
 			if(err == CHIAKI_ERR_CANCELED)
 			{

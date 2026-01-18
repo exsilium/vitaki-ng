@@ -8,6 +8,10 @@ if(APPLE)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Concurrent Svg Qml Quick Widgets)
+if(Qt6_VERSION VERSION_GREATER_EQUAL "6.10.0")
+	find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
+endif()
+
 find_package(Qt6 COMPONENTS WebEngineQuick)
 find_package(Qt6 COMPONENTS DBus)
 
@@ -74,6 +78,13 @@ if(APPLE)
 	list(APPEND SOURCE_FILES
 		include/macMicPermission.h
 		src/macMicPermission.m
+		include/macWakeSleep.h
+		src/macWakeSleep.cpp
+	)
+elseif(WIN32)
+	list(APPEND SOURCE_FILES
+		include/windowsWakeSleep.h
+		src/windowsWakeSleep.cpp
 	)
 endif()
 
@@ -96,7 +107,9 @@ endif()
 target_link_libraries(chiaki Qt::Core Qt::Gui Qt::GuiPrivate Qt::Concurrent Qt::Svg Qt::Qml Qt::Quick Qt::Widgets)
 if (${Qt6DBus_FOUND} AND NOT WIN32)
 	target_link_libraries(chiaki Qt::DBus)
+if (NOT APPLE)
 	target_compile_definitions(chiaki PRIVATE CHIAKI_HAVE_DBUS)
+endif()
 endif()
 if (${Qt6WebEngineQuick_FOUND})
 	target_link_libraries(chiaki Qt::WebEngineQuick)
@@ -126,7 +139,7 @@ if(NOT CHIAKI_ENABLE_FFMPEG_DECODER)
 	message(FATAL_ERROR "Chiaki GUI requires CHIAKI_ENABLE_FFMPEG_DECODER=ON")
 endif()
 if(APPLE)
-	target_link_libraries(chiaki "-framework AVFoundation")
+	target_link_libraries(chiaki "-framework AVFoundation" "-framework IOKit")
 endif()
 
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fanalyzer")
